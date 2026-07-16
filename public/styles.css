@@ -97,8 +97,14 @@ body {
   border: none; border-radius: 10px; padding: 10px 12px;
   transition: all 0.15s;
 }
-.tab-btn .tb-ico { font-size: 15px; width: 20px; text-align: center; display: inline-flex; justify-content: center; }
+.tab-btn .tb-ico { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.tab-btn .tb-ico svg { width: 18px; height: 18px; display: block; }
 .tab-btn .live-dot { width: 9px; height: 9px; }
+/* "Ao vivo": ícone verde pulsando */
+.tab-btn .tb-live { color: var(--live); }
+.tab-btn.active .tb-live { color: var(--live); }
+.tab-btn .tb-live svg { animation: tbLivePulse 1.8s ease-in-out infinite; }
+@keyframes tbLivePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 .tab-btn:hover { background: rgba(42, 120, 214, 0.05); color: var(--text-primary); }
 .tab-btn.active {
   color: var(--accent); background: var(--accent-tint);
@@ -1260,7 +1266,11 @@ html[data-theme="dark"] .dr-root .text-red-400 { color: #f87171 !important; }
   transition: all 0.15s;
 }
 .theme-toggle:hover { border-color: var(--border-accent); color: var(--text-primary); }
-.theme-toggle .tt-ico { font-size: 15px; line-height: 1; }
+.theme-toggle .tt-ico { display: inline-flex; align-items: center; }
+.theme-toggle .tt-ico svg { width: 16px; height: 16px; display: block; }
+#manageBtn { display: flex; align-items: center; justify-content: center; gap: 8px; }
+#manageBtn .mb-ico { display: inline-flex; align-items: center; }
+#manageBtn svg { width: 16px; height: 16px; display: block; }
 @media (max-width: 980px) {
   .theme-toggle .tt-label { display: none; }
 }
