@@ -122,10 +122,13 @@ async function loadMetrics() {
     renderProductTable(m);
     renderCommand(m);
 
+    // mostra o motivo real que a Shopify deu, e não um palpite sobre o token
     const errs = m.byStore.filter((s) => s.error);
     if (errs.length) {
       $('errorBanner').hidden = false;
-      $('errorBanner').textContent = `Falha ao consultar ${errs.map((e) => e.name).join(', ')} — confira o token em "Gerenciar lojas".`;
+      $('errorBanner').innerHTML = errs
+        .map((e) => `<div class="eb-item"><strong>${esc(e.name)}</strong> — ${esc(e.error)}</div>`)
+        .join('');
     }
   } catch (e) {
     $('errorBanner').hidden = false;
@@ -1813,6 +1816,7 @@ function renderStoresGrid(stores) {
         <div><div class="sc-stat-label">Pedidos</div><div class="sc-stat-value">${fmtInt(s.orders30d)}</div></div>
         <div><div class="sc-stat-label">Status</div><div class="sc-stat-value ${ok ? 'active' : ''}">${ok ? 'Ativo' : 'Falha'}</div></div>
       </div>
+      ${ok ? '' : `<div class="sc-error">${esc(s.error || 'Falha ao consultar a Shopify.')}</div>`}
       <div class="sc-footer">
         <button class="sc-camuflar" data-camuflar="${esc(s.id)}">🥷 Camuflar loja</button>
         <button class="sc-details" data-details="${esc(s.id)}">Ver detalhes →</button>

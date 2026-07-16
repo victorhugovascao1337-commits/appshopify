@@ -371,7 +371,8 @@ async function collectOrders(stores, from, to) {
         const { orders, truncated } = await fetchOrders(s, from, to);
         return { store: s, orders, truncated, error: null };
       } catch (e) {
-        return { store: s, orders: [], truncated: false, error: e.message };
+        // explica a causa (403 = escopo faltando, 401 = token, etc.) em vez do erro cru
+        return { store: s, orders: [], truncated: false, error: explainShopifyError(e, s.domain) };
       }
     })
   );
@@ -415,7 +416,10 @@ function explainShopifyError(e, domain) {
     return `A Shopify recusou o token para ${domain}. Causas comuns: (1) o app não foi instalado — clique em Instalar app e gere o token; (2) o token é de outra loja; (3) o token foi revogado ou regerado (o antigo para de valer); (4) foi colada a API key/secret no lugar do token.`;
   }
   if (e.status === 403) {
-    return `Token aceito, mas sem permissão em ${domain}. Marque os escopos read_orders e read_products em Escopos do Admin API, salve, clique em Instalar app de novo e gere um token novo — o antigo não ganha as permissões.`;
+    // a Shopify diz qual escopo faltou: "requires merchant approval for read_orders scope"
+    const escopo = /approval for (\w+) scope/i.exec(msg);
+    const qual = escopo ? `o escopo ${escopo[1]}` : 'os escopos necessários (read_orders e read_products)';
+    return `O token de ${domain} é válido, mas a loja não aprovou ${qual}. Isso não se resolve trocando o token: no app da loja, marque ${escopo ? escopo[1] : 'read_orders e read_products'} em Configuração → Escopos do Admin API, salve, clique em Instalar app de novo (ou Atualizar) e então gere um token novo.`;
   }
   if (e.status === 404) {
     return `Loja não encontrada: ${domain}. Confira o endereço .myshopify.com (não é o domínio personalizado nem o seu e-mail).`;
