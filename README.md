@@ -64,7 +64,23 @@ O mesmo código roda hospedado: **Vercel** serve o painel e a API, **Supabase** 
 - `data/` e `.env` estão no `.gitignore`: segredos não vão para o repositório.
 - O acesso ao painel exige senha (cookie de sessão assinado com HMAC, HttpOnly).
 
-## Como conectar uma loja
+## Conectar loja por OAuth (Partner App)
+
+Alternativa ao Custom App — necessária quando a loja **bloqueia o desenvolvimento de apps personalizados** (comum em lojas dentro de uma organização) ou quando você instala na loja de um cliente.
+
+1. Em [partners.shopify.com](https://partners.shopify.com) → **Apps → Create app**.
+2. Em **Configuration**:
+   - **App URL**: a URL do painel (ex.: `https://seu-app.vercel.app`, ou `http://localhost:3030` para testar local)
+   - **Allowed redirection URL(s)**: `<URL do painel>/api/oauth/callback` — o wizard mostra o valor exato, com botão de copiar
+   - **Admin API access scopes**: `read_orders`, `read_products` (+ `write_orders` se for usar o pós-compra digital)
+3. Em **Distribution**, escolha **Public distribution** se for instalar em lojas de outras organizações. ⚠️ Essa escolha é **definitiva**: *Custom distribution* prende o app a uma única organização e causa o erro *"This app can't be installed on this store"*.
+4. No painel: **Lojas → Conectar loja → OAuth (Partner App)** → informe o domínio, o Client ID e o Secret → **Autorizar via OAuth**.
+
+O Client ID/Secret ficam guardados (o Secret criptografado), então nas próximas lojas basta o domínio. Dá para fixar por ambiente com `SHOPIFY_API_KEY` e `SHOPIFY_API_SECRET`, e mudar os escopos com `SHOPIFY_SCOPES`.
+
+> O OAuth funciona **também rodando local**: o redirect passa pelo seu navegador e a troca do token é uma chamada de saída. Só lembre de cadastrar `http://localhost:3030/api/oauth/callback` nas URLs de redirect do app.
+
+## Como conectar uma loja (Custom App)
 
 Para cada loja, você cria um "app personalizado" no admin da Shopify (leva ~2 minutos):
 

@@ -1881,6 +1881,21 @@ function setWizardMode(mode) {
   lojas.wizardMode = mode;
   document.querySelectorAll('.mode-opt').forEach((b) => b.classList.toggle('selected', b.dataset.mode === mode));
   document.querySelectorAll('.mode-panel').forEach((p) => { p.hidden = p.dataset.modePanel !== mode; });
+  $('wizValidate').innerHTML = mode === 'oauth' ? '↗ Autorizar via OAuth' : '⚡ Validar e conectar';
+  if (mode === 'oauth') loadOauthInfo();
+}
+
+// volta do OAuth: a Shopify redireciona para /?conectada=<loja>
+{
+  const q = new URLSearchParams(location.search);
+  const conectada = q.get('conectada');
+  if (conectada) {
+    history.replaceState({}, '', location.pathname);
+    setTimeout(() => {
+      showLojaToast('✓ Loja conectada por OAuth', `${conectada} entrou no painel.`);
+      document.querySelector('.tab-btn[data-tab="lojas"]').click();
+    }, 400);
+  }
 }
 
 function setWizStatus(id, msg, cls) {
@@ -1896,11 +1911,48 @@ $('wizToStep1').addEventListener('click', () => gotoStep(1));
 document.querySelectorAll('.mode-opt').forEach((b) => b.addEventListener('click', () => setWizardMode(b.dataset.mode)));
 $('oauthToCustom').addEventListener('click', () => setWizardMode('custom'));
 
-$('wizValidate').addEventListener('click', async () => {
-  if (lojas.wizardMode === 'oauth') {
-    setWizStatus('oauthStatus', 'O fluxo OAuth ainda não está disponível nesta build — use o Custom App ao lado.', 'err');
-    return;
+/* ---------- OAuth (Partner App) ---------- */
+
+async function loadOauthInfo() {
+  try {
+    const d = await api('/api/oauth/info');
+    $('oauthRedirectUri').textContent = d.redirectUri;
+    $('oauthAppUrlHint').innerHTML = `Em <strong>App URL</strong> use <code>${esc(d.appUrl)}</code>. Escopos pedidos: <code>${d.scopes.map(esc).join(', ')}</code>.` +
+      (d.hasConfig ? ' <strong>Client ID/Secret já salvos</strong> — pode deixar os campos em branco.' : '');
+  } catch { /* mantém "carregando…" */ }
+}
+
+$('copyRedirectBtn').addEventListener('click', async () => {
+  const url = $('oauthRedirectUri').textContent;
+  try {
+    await navigator.clipboard.writeText(url);
+    showLojaToast('URL copiada', 'Cole em Allowed redirection URL(s) no Partner Dashboard.');
+  } catch {
+    showLojaToast('Copie manualmente', url);
   }
+});
+
+async function oauthStart() {
+  const domain = $('oauthDomain').value.trim();
+  if (!domain) { setWizStatus('oauthStatus', '✗ Informe o domínio .myshopify.com da loja.', 'err'); return; }
+  setWizStatus('oauthStatus', 'Preparando a autorização…', 'loading');
+  try {
+    const res = await fetch('/api/oauth/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain, clientId: $('oauthClientId').value.trim(), secret: $('oauthSecret').value.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Falha ao iniciar o OAuth.');
+    setWizStatus('oauthStatus', 'Redirecionando para a Shopify…', 'ok');
+    window.location.href = data.url; // o lojista aceita as permissões lá
+  } catch (e) {
+    setWizStatus('oauthStatus', `✗ ${e.message}`, 'err');
+  }
+}
+
+$('wizValidate').addEventListener('click', async () => {
+  if (lojas.wizardMode === 'oauth') return oauthStart();
   const domain = $('wizDomain').value.trim();
   const token = $('wizToken').value.trim();
   const name = $('wizName').value.trim();

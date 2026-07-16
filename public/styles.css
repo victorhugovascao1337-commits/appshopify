@@ -1058,6 +1058,17 @@ textarea.panel-input { resize: vertical; }
 .summary-list dt { font-size: 13px; color: var(--text-secondary); }
 .summary-list dd { font-size: 13px; font-weight: 650; text-align: right; }
 
+/* caixa da URL de redirect (OAuth) */
+.redirect-box {
+  display: flex; align-items: center; gap: 8px; margin-top: 8px;
+  background: var(--surface-solid); border: 1px solid var(--border);
+  border-radius: 9px; padding: 8px 10px;
+}
+.redirect-box code {
+  flex: 1; min-width: 0; font-family: Consolas, monospace; font-size: 11.5px;
+  color: var(--accent); overflow-x: auto; white-space: nowrap;
+}
+
 /* aba Mapeamento (vitrine → checkout) */
 .map-counter {
   font-size: 11px; font-weight: 700; padding: 4px 11px; border-radius: 999px;

@@ -711,7 +711,7 @@
             </button>
             <button class="mode-opt" data-mode="oauth">
               <span class="mode-title">↗ OAuth (Partner App) <span class="mode-tag tag-prod">Produção</span></span>
-              <span class="mode-desc">Fluxo Shopify oficial. Multi-tenant. Requer App criado em partners.shopify.com.</span>
+              <span class="mode-desc">Fluxo Shopify oficial. Serve para loja de cliente e para as que bloqueiam app personalizado. Requer app em partners.shopify.com.</span>
             </button>
           </div>
 
@@ -783,8 +783,11 @@
           <div class="mode-panel" data-mode-panel="oauth" hidden>
             <div class="wiz-note note-warn">
               <strong>⚠ Deu "This app can't be installed on this store"?</strong>
-              <p>O app do Partner está em <strong>distribuição Custom</strong>: o Shopify só deixa instalar em lojas da <strong>mesma organização</strong>. Use o caminho <strong>Custom App</strong> (ao lado): cria um app dentro do admin da própria loja e funciona em qualquer loja, sem review.</p>
-              <button class="control btn-ghost" id="oauthToCustom">Trocar para Custom App →</button>
+              <p>Isso é a <strong>distribuição</strong> do app, não o OAuth. Em <strong>Partner Dashboard → seu app → Distribution</strong>:</p>
+              <p>• <strong>Custom distribution</strong> → só instala em <strong>uma</strong> loja/organização escolhida. É o erro mais comum.</p>
+              <p>• <strong>Public distribution</strong> → instala em qualquer loja (precisa de review da Shopify só para listar na App Store; para uso próprio, o link de instalação já funciona).</p>
+              <p>A escolha da distribuição é <strong>definitiva</strong> depois de selecionada — se errou, crie outro app.</p>
+              <button class="control btn-ghost" id="oauthToCustom">Prefiro o Custom App →</button>
             </div>
 
             <!-- escopos necessários (OAuth) -->
@@ -828,7 +831,20 @@
             </label>
             <label class="wiz-field">Secret <span class="opt">(client secret do app)</span> 🔒
               <input type="password" id="oauthSecret" placeholder="shpss_…" autocomplete="off">
+              <span class="wiz-hint">Guardado criptografado no servidor e reaproveitado nas próximas lojas — você só precisa colar uma vez.</span>
             </label>
+
+            <!-- URL que precisa estar cadastrada no Partner Dashboard -->
+            <div class="wiz-note">
+              <strong>🔗 Cadastre esta URL no seu app antes de autorizar</strong>
+              <p>No <strong>Partner Dashboard → seu app → Configuration</strong>, em <strong>Allowed redirection URL(s)</strong>, cole exatamente:</p>
+              <div class="redirect-box">
+                <code id="oauthRedirectUri">carregando…</code>
+                <button type="button" class="control sm" id="copyRedirectBtn">Copiar</button>
+              </div>
+              <p id="oauthAppUrlHint" class="wiz-hint" style="margin-top:8px"></p>
+            </div>
+
             <div class="wiz-status" id="oauthStatus"></div>
           </div>
 

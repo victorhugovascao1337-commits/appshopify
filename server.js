@@ -70,7 +70,9 @@ app.use((req, res, next) => {
     });
   }
   if (!PANEL_PASSWORD) return next(); // local sem senha
-  if (LOGIN_PATHS.has(req.path) || req.path.startsWith('/api/cron/')) return next();
+  // O callback do OAuth vem da Shopify: não passa pelo login, mas exige
+  // state assinado por nós + HMAC da Shopify, que é a prova de origem.
+  if (LOGIN_PATHS.has(req.path) || req.path.startsWith('/api/cron/') || req.path === '/api/oauth/callback') return next();
   if (validToken(readCookie(req, COOKIE))) return next();
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Não autenticado.' });
   return res.redirect('/login');
@@ -1603,6 +1605,220 @@ app.get('/api/resolve', async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+/* ---------- OAuth (Partner App) ----------
+ *
+ * Alternativa ao Custom App: funciona em qualquer loja, inclusive nas que têm
+ * o desenvolvimento de apps personalizados bloqueado pela organização.
+ *
+ * Fluxo: /api/oauth/start monta a URL de autorização → o lojista aceita na
+ * Shopify → a Shopify manda o navegador de volta em /api/oauth/callback com um
+ * `code` → trocamos o code pelo access token (chamada de saída) e salvamos a loja.
+ *
+ * Segurança: validamos o HMAC que a Shopify assina, o `state` (CSRF) que nós
+ * assinamos, e o formato do domínio (evita redirect aberto / SSRF).
+ */
+
+const OAUTH_SCOPES = process.env.SHOPIFY_SCOPES || 'read_orders,read_products,write_orders';
+const OAUTH_STATE_MINUTES = 15;
+
+// só aceita domínio .myshopify.com de verdade
+function isValidShopDomain(shop) {
+  return /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/i.test(String(shop || ''));
+}
+
+/*
+ * Base do próprio app, usada no redirect do OAuth.
+ * Deriva do request: local vira http://localhost:3030, na Vercel vira o domínio
+ * do deploy. Assim o OAuth funciona nos dois sem trocar configuração.
+ * (APP_URL só para forçar, ex.: atrás de proxy. Não usar PANEL_URL aqui —
+ * ela existe para o cron e apontaria o local para produção.)
+ */
+function appBaseUrl(req) {
+  if (process.env.APP_URL) return String(process.env.APP_URL).replace(/\/$/, '');
+  const proto = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  return `${proto}://${host}`;
+}
+
+function oauthRedirectUri(req) {
+  return `${appBaseUrl(req)}/api/oauth/callback`;
+}
+
+// state assinado: carrega a loja e um nonce, com validade curta
+function makeState(shop) {
+  const payload = Buffer.from(JSON.stringify({ shop, exp: Date.now() + OAUTH_STATE_MINUTES * 60000, n: crypto.randomBytes(8).toString('hex') })).toString('base64url');
+  return `${payload}.${sign(payload)}`;
+}
+
+function readState(state) {
+  if (!state || !state.includes('.')) return null;
+  const [payload, sig] = state.split('.');
+  const expected = Buffer.from(sign(payload));
+  const got = Buffer.from(sig);
+  if (expected.length !== got.length || !crypto.timingSafeEqual(expected, got)) return null;
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
+    return data.exp > Date.now() ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+/*
+ * Confere a assinatura que a Shopify põe na volta do OAuth.
+ * Regra: tira hmac/signature, ordena os campos, junta com & e assina com o secret.
+ */
+function verifyShopifyHmac(query, secret) {
+  const { hmac, signature, ...rest } = query;
+  if (!hmac) return false;
+  const message = Object.keys(rest)
+    .sort()
+    .map((k) => `${k}=${Array.isArray(rest[k]) ? rest[k].join(',') : rest[k]}`)
+    .join('&');
+  const digest = crypto.createHmac('sha256', secret).update(message).digest('hex');
+  const a = Buffer.from(digest);
+  const b = Buffer.from(String(hmac));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// credenciais do Partner App (env tem prioridade; senão, o que veio pelo wizard)
+async function loadOAuthConfig() {
+  const saved = (await db.readDoc('oauth', {})) || {};
+  return {
+    clientId: process.env.SHOPIFY_API_KEY || saved.clientId || '',
+    secret: process.env.SHOPIFY_API_SECRET || (saved.secret ? db.decrypt(saved.secret) : ''),
+    fromEnv: !!(process.env.SHOPIFY_API_KEY && process.env.SHOPIFY_API_SECRET),
+  };
+}
+
+async function saveOAuthConfig({ clientId, secret }) {
+  await db.writeDoc('oauth', { clientId, secret: db.encrypt(secret), savedAt: new Date().toISOString() });
+}
+
+// o que mostrar no wizard: URL de redirect para cadastrar no Partner Dashboard
+app.get('/api/oauth/info', async (req, res) => {
+  const cfg = await loadOAuthConfig();
+  res.json({
+    redirectUri: oauthRedirectUri(req),
+    appUrl: appBaseUrl(req),
+    scopes: OAUTH_SCOPES.split(','),
+    hasConfig: !!(cfg.clientId && cfg.secret),
+    fromEnv: cfg.fromEnv,
+  });
+});
+
+// passo 1: monta a URL de autorização
+app.post('/api/oauth/start', async (req, res) => {
+  try {
+    const shop = normalizeDomain((req.body || {}).domain);
+    if (!isValidShopDomain(shop)) {
+      return res.status(400).json({ error: 'Informe o domínio .myshopify.com da loja (ex.: minhaloja.myshopify.com).' });
+    }
+    if ((await loadStores()).some((s) => s.domain === shop)) {
+      return res.status(409).json({ error: 'Essa loja já está conectada no painel.' });
+    }
+
+    let { clientId, secret } = req.body || {};
+    clientId = String(clientId || '').trim();
+    secret = String(secret || '').trim();
+    if (clientId && secret) {
+      await saveOAuthConfig({ clientId, secret }); // reaproveita nas próximas lojas
+    } else {
+      const cfg = await loadOAuthConfig();
+      clientId = cfg.clientId;
+      secret = cfg.secret;
+    }
+    if (!clientId || !secret) {
+      return res.status(400).json({ error: 'Informe o Client ID e o Secret do app (Partner Dashboard → App setup).' });
+    }
+
+    const url = `https://${shop}/admin/oauth/authorize?client_id=${encodeURIComponent(clientId)}` +
+      `&scope=${encodeURIComponent(OAUTH_SCOPES)}` +
+      `&redirect_uri=${encodeURIComponent(oauthRedirectUri(req))}` +
+      `&state=${encodeURIComponent(makeState(shop))}`;
+    res.json({ ok: true, url, redirectUri: oauthRedirectUri(req) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// passo 2: a Shopify manda o navegador de volta aqui
+app.get('/api/oauth/callback', async (req, res) => {
+  const falha = (msg) => res.status(400).send(
+    `<!doctype html><meta charset="utf-8"><title>Falha na conexão</title>` +
+    `<body style="font-family:system-ui;padding:40px;max-width:640px;margin:auto;color:#101828">` +
+    `<h2 style="color:#d03b3b">Não deu para conectar</h2><p>${msg}</p>` +
+    `<p><a href="/">← Voltar ao painel</a></p></body>`
+  );
+  try {
+    const { code, shop, state } = req.query;
+    if (!isValidShopDomain(shop)) return falha('Domínio de loja inválido.');
+
+    const st = readState(state);
+    if (!st) return falha('O pedido expirou ou é inválido (state). Tente conectar de novo pelo painel.');
+    if (st.shop !== String(shop).toLowerCase()) return falha('A loja da autorização não confere com a que você pediu.');
+
+    const cfg = await loadOAuthConfig();
+    if (!cfg.clientId || !cfg.secret) return falha('As credenciais do app não estão configuradas.');
+    if (!verifyShopifyHmac(req.query, cfg.secret)) return falha('Assinatura inválida (HMAC) — a resposta não veio da Shopify.');
+    if (!code) return falha('A Shopify não devolveu o código de autorização.');
+
+    // troca o code pelo access token (chamada de saída, funciona até rodando local)
+    const r = await fetch(`https://${shop}/admin/oauth/access_token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: cfg.clientId, client_secret: cfg.secret, code }),
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      return falha(`A Shopify recusou a troca do código: ${r.status} ${t.slice(0, 160)}`);
+    }
+    const { access_token: token, scope } = await r.json();
+    if (!token) return falha('A Shopify não devolveu o access token.');
+
+    // confirma o token e pega nome/moeda
+    let name = shop.replace('.myshopify.com', '');
+    let currency = 'BRL';
+    try {
+      const { data } = await shopifyFetch({ domain: shop, token }, 'shop.json');
+      name = data.shop.name || name;
+      currency = data.shop.currency || currency;
+    } catch { /* segue com o padrão */ }
+
+    const stores = await loadStores();
+    if (stores.some((s) => s.domain === shop)) return falha('Essa loja já está conectada no painel.');
+
+    const store = {
+      id: crypto.randomUUID(),
+      name,
+      domain: shop,
+      token,
+      currency,
+      platform: 'shopify',
+      connectedAt: new Date().toISOString(),
+      auth: 'oauth',
+      scopes: scope || OAUTH_SCOPES,
+    };
+    stores.push(store);
+    await saveStores(stores);
+    cache.clear();
+
+    // loja nova entra no pool de checkout (a primeira vira vitrine)
+    try {
+      const { f } = await ensureFlowConfig();
+      if (f.vitrineId && store.id !== f.vitrineId && !f.pool.some((p) => p.id === store.id)) {
+        f.pool.push({ id: store.id, limit: DEFAULT_LIMIT, dailyLimit: 0, paused: false, resetAt: null });
+        if (!f.state.activeId) f.state = { activeId: store.id, activatedAt: new Date().toISOString() };
+        await saveFlowConfig(f);
+      }
+    } catch { /* não impede a conexão */ }
+
+    res.redirect(`/?conectada=${encodeURIComponent(name)}`);
+  } catch (e) {
+    falha(e.message);
   }
 });
 
