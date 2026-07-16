@@ -1008,6 +1008,14 @@ textarea.panel-input { resize: vertical; }
 .scopes-intro { font-size: 11.5px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 10px; }
 .scopes-intro code { font-family: Consolas, monospace; font-size: 11px; background: var(--accent-tint); color: var(--accent); padding: 1px 5px; border-radius: 4px; }
 
+/* explicador do redirect (tema escuro do Flow) */
+.sc-explica summary::-webkit-details-marker { display: none; }
+.sc-explica summary { list-style: none; }
+.sc-explica summary:hover { background: rgba(255,255,255,.02); }
+.sc-explica .sc-chev { transition: transform .2s ease; }
+.sc-explica[open] .sc-chev { transform: rotate(180deg); }
+.sc-explica code { font-family: Consolas, monospace; background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 4px; }
+
 .wiz-details { margin-bottom: 12px; }
 .wiz-details summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--accent); list-style: none; }
 .wiz-details summary::-webkit-details-marker { display: none; }

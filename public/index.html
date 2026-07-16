@@ -473,6 +473,40 @@
               <div class="p-5 bg-white/[0.02] space-y-4">
                 <p class="text-[11px] text-gray-500 leading-relaxed">Quem abrir um produto da <strong id="scVitrine">vitrine</strong> é levado para o produto que você escolheu na <strong>loja de checkout ativa</strong> do Flow. Os pares ficam em <strong>Lojas → (loja de checkout) → Mapeamento</strong>.</p>
 
+                <details class="sc-explica rounded-2xl border border-white/10 bg-black/25 overflow-hidden">
+                  <summary class="flex items-center gap-2 p-4 cursor-pointer select-none list-none">
+                    <span class="material-symbols-outlined text-purple-400 text-lg">help</span>
+                    <span class="text-sm font-bold text-gray-200">Como funciona e onde instala cada coisa</span>
+                    <span class="material-symbols-outlined text-gray-500 text-lg ml-auto sc-chev">expand_more</span>
+                  </summary>
+                  <div class="px-4 pb-4 space-y-3">
+                    <p class="text-[11px] text-gray-400 leading-relaxed">São <strong>duas peças em duas lojas diferentes</strong>. Não confunda:</p>
+
+                    <div class="rounded-xl border border-purple-500/25 bg-purple-500/[0.06] p-3">
+                      <div class="flex items-center gap-2 mb-1">
+                        <span class="material-symbols-outlined text-purple-400 text-base">storefront</span>
+                        <p class="text-xs font-bold text-purple-300">1. O script vai na VITRINE</p>
+                      </div>
+                      <p class="text-[11px] text-gray-400 leading-relaxed">É a loja de onde o cliente chega pelo anúncio. O botão <strong>“Instalar na vitrine”</strong> aqui embaixo coloca um ScriptTag nela — ele detecta o produto e redireciona. <strong>Não mexe no tema.</strong> Precisa do escopo <code class="text-purple-300">write_script_tags</code> na vitrine.</p>
+                    </div>
+
+                    <div class="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.06] p-3">
+                      <div class="flex items-center gap-2 mb-1">
+                        <span class="material-symbols-outlined text-emerald-400 text-base">shopping_cart_checkout</span>
+                        <p class="text-xs font-bold text-emerald-300">2. A Storefront API vai na loja de CHECKOUT</p>
+                      </div>
+                      <p class="text-[11px] text-gray-400 leading-relaxed">Só é preciso para o <strong>Checkout direto</strong> (carrinho pronto). É lá que o painel monta o carrinho e gera o link de pagamento. <strong>Você NÃO instala o app “Headless”</strong> — o próprio app que já conecta a loja gera o token sozinho; basta liberar os escopos Storefront na <strong>loja de checkout</strong>:</p>
+                      <ul class="mt-2 space-y-1 text-[11px] text-gray-400 leading-relaxed list-disc pl-4">
+                        <li><strong>Custom App:</strong> admin da loja de checkout → Apps → seu app → <strong>Configuração</strong> → em <strong>Storefront API</strong>, marque os escopos <code class="text-emerald-300">unauthenticated_*</code>, salve e clique em <strong>Instalar/Atualizar</strong> o app.</li>
+                        <li><strong>Partner App (OAuth):</strong> só <strong>reconectar</strong> a loja de checkout pelo painel — os escopos novos já entram no fluxo.</li>
+                      </ul>
+                      <p class="text-[11px] text-gray-500 leading-relaxed mt-2">Enquanto não liberar, o cliente cai na <strong>página do produto</strong> da loja de checkout — nada quebra. O aviso “Destino do cliente” abaixo mostra se já está liberada.</p>
+                    </div>
+
+                    <p class="text-[11px] text-gray-500 leading-relaxed">Dica: teste sem redirecionar abrindo a vitrine com <code class="text-purple-300">?noredirect=1</code> no fim da URL.</p>
+                  </div>
+                </details>
+
                 <div class="bg-white/[0.03] rounded-2xl p-4 border border-white/5">
                   <div class="flex items-center justify-between">
                     <div><p class="text-sm font-bold text-gray-200">Destino do cliente</p><p class="text-[10px] text-gray-500">Para onde o cliente cai ao ser redirecionado</p></div>
