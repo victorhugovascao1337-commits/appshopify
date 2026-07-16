@@ -1287,16 +1287,63 @@ async function scRenderCheckout(cfg) {
   el.innerHTML = '<span class="text-gray-500">Verificando a loja de checkout…</span>';
   try {
     const r = await api('/api/script/checkout-check');
+    const nome = r.store ? esc(r.store.name || 'loja de checkout') : 'loja de checkout';
+
     if (r.ready) {
-      el.innerHTML = `<span class="text-emerald-400">✓ Storefront pronta</span> <span class="text-gray-600">— ${esc(r.store ? r.store.name : '')} monta o carrinho e vai direto ao pagamento.</span>`;
+      el.innerHTML = `<div class="flex items-center gap-2"><span class="text-emerald-400">✓ Storefront pronta</span> <span class="text-gray-600">— ${nome} monta o carrinho e vai direto ao pagamento.</span></div>`
+        + (r.store ? scTokenFormHtml(r.store, r.hasToken, true) : '');
     } else {
-      const dom = r.store && r.store.domain;
-      el.innerHTML = `<span class="text-amber-400">Storefront ainda não liberada</span> <span class="text-gray-600">— ${esc(r.reason || 'reconecte a loja com os escopos unauthenticated_*')}</span>`
-        + (dom ? ` <button id="scReconnectBtn" class="ml-1 px-2 py-0.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[10px] font-bold hover:bg-emerald-500/20 transition-all">Reconectar ${esc(r.store.name || 'loja')} via OAuth</button>` : '');
-      if (dom) { const b = $('scReconnectBtn'); if (b) b.addEventListener('click', () => scReconnect(dom)); }
+      el.innerHTML = `<div class="text-gray-600 leading-relaxed"><span class="text-amber-400 font-bold">Storefront ainda não liberada</span> — ${esc(r.reason || 'gere um token Storefront para esta loja.')}</div>`
+        + (r.store ? scTokenFormHtml(r.store, r.hasToken, false) : '');
     }
+    if (r.store) scWireTokenForm(r.store);
   } catch (e) {
     el.innerHTML = `<span class="text-gray-600">${esc(e.message.slice(0, 80))}</span>`;
+  }
+}
+
+// formulário para colar o token Storefront do canal Headless (por loja de checkout)
+function scTokenFormHtml(store, hasToken, ready) {
+  const help = 'https://apps.shopify.com/headless';
+  return `<div class="mt-2 rounded-xl border border-white/10 bg-black/30 p-3">
+    <div class="flex items-center gap-2 mb-1.5">
+      <span class="material-symbols-outlined text-emerald-400 text-sm">vpn_key</span>
+      <span class="text-[11px] font-bold text-gray-300">Token Storefront de ${esc(store.name || store.domain)}</span>
+      ${hasToken ? '<span class="text-[9px] text-emerald-400 border border-emerald-500/30 rounded-full px-2 py-0.5">salvo</span>' : ''}
+    </div>
+    <p class="text-[10px] text-gray-500 leading-relaxed mb-2">Instale o canal <a href="${help}" target="_blank" class="text-emerald-400 underline">Headless</a> nesta loja de checkout, abra <strong>Storefronts → API access</strong>, copie o <strong>Public access token</strong> e cole aqui. Vale só para esta loja.</p>
+    <div class="flex gap-2">
+      <input id="scSfToken" type="text" placeholder="${hasToken ? '•••••• (token salvo — cole um novo para trocar)' : 'Public access token do Headless'}" class="flex-1 bg-black/40 border border-white/10 rounded-lg px-2.5 py-1.5 text-white text-[11px] font-mono focus:outline-none focus:border-emerald-500/50" autocomplete="off">
+      <button id="scSfSave" class="px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[10px] font-bold hover:bg-emerald-500/20 transition-all">Salvar</button>
+      ${hasToken ? '<button id="scSfRemove" class="px-3 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-[10px] font-bold hover:bg-rose-500/20 transition-all">Remover</button>' : ''}
+    </div>
+    <div id="scSfMsg" class="text-[10px] mt-1.5"></div>
+  </div>`;
+}
+
+function scWireTokenForm(store) {
+  const save = $('scSfSave');
+  if (save) save.addEventListener('click', () => scSaveSfToken(store.id, $('scSfToken').value.trim()));
+  const rem = $('scSfRemove');
+  if (rem) rem.addEventListener('click', () => scSaveSfToken(store.id, ''));
+  const inp = $('scSfToken');
+  if (inp) inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') scSaveSfToken(store.id, inp.value.trim()); });
+}
+
+async function scSaveSfToken(storeId, token) {
+  const msg = $('scSfMsg');
+  if (msg) msg.innerHTML = '<span class="text-gray-500">Validando com a loja…</span>';
+  try {
+    const res = await fetch(`/api/stores/${storeId}/storefront-token`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'Falha ao salvar o token.');
+    showLojaToast('✓ Salvo', token ? 'Token Storefront validado — checkout direto liberado.' : 'Token Storefront removido.');
+    scLoad(); // recarrega o status (agora deve ficar "Storefront pronta")
+  } catch (e) {
+    if (msg) msg.innerHTML = `<span class="text-rose-400">${esc(e.message)}</span>`;
   }
 }
 

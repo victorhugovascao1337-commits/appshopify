@@ -495,12 +495,12 @@
                         <span class="material-symbols-outlined text-emerald-400 text-base">shopping_cart_checkout</span>
                         <p class="text-xs font-bold text-emerald-300">2. A Storefront API vai na loja de CHECKOUT</p>
                       </div>
-                      <p class="text-[11px] text-gray-400 leading-relaxed">Só é preciso para o <strong>Checkout direto</strong> (carrinho pronto). É lá que o painel monta o carrinho e gera o link de pagamento. <strong>Você NÃO instala o app “Headless”</strong> — o próprio app que já conecta a loja gera o token sozinho; basta liberar os escopos Storefront na <strong>loja de checkout</strong>:</p>
+                      <p class="text-[11px] text-gray-400 leading-relaxed">Só é preciso para o <strong>Checkout direto</strong> (carrinho pronto). É lá que o painel monta o carrinho e gera o link de pagamento. Ele usa um <strong>token da Storefront API</strong> da loja de checkout. Jeito mais fácil, que funciona em qualquer loja e plano:</p>
                       <ul class="mt-2 space-y-1 text-[11px] text-gray-400 leading-relaxed list-disc pl-4">
-                        <li><strong>Custom App:</strong> admin da loja de checkout → Apps → seu app → <strong>Configuração</strong> → em <strong>Storefront API</strong>, marque os escopos <code class="text-emerald-300">unauthenticated_*</code>, salve e clique em <strong>Instalar/Atualizar</strong> o app.</li>
-                        <li><strong>Partner App (OAuth) — provável seu caso:</strong> não existe a tela “Storefront API” do Custom App. Basta <strong>reconectar</strong> a loja de checkout: clique em <strong>“Reconectar … via OAuth”</strong> no aviso “Destino do cliente” abaixo (ou refaça em <strong>Lojas → Conectar → OAuth</strong>) e aceite as permissões. Os escopos novos já vão no pedido.</li>
+                        <li><strong>Canal Headless (recomendado):</strong> na loja de checkout, instale o app <strong>Headless</strong> pela App Store → <strong>Storefronts → API access</strong> → copie o <strong>Public access token</strong> e <strong>cole no campo “Token Storefront”</strong> que aparece no aviso “Destino do cliente” abaixo. Funciona mesmo sem custom app.</li>
+                        <li><strong>Custom App</strong> (se a loja tiver “Desenvolver apps”): marque os escopos <code class="text-emerald-300">unauthenticated_*</code> em Storefront API — o painel gera o token sozinho.</li>
                       </ul>
-                      <p class="text-[11px] text-gray-500 leading-relaxed mt-2">Enquanto não liberar, o cliente cai na <strong>página do produto</strong> da loja de checkout — nada quebra. O aviso “Destino do cliente” abaixo mostra se já está liberada.</p>
+                      <p class="text-[11px] text-gray-500 leading-relaxed mt-2">Enquanto não colar/liberar, o cliente cai na <strong>página do produto</strong> da loja de checkout — nada quebra. O aviso “Destino do cliente” abaixo mostra se já está pronta.</p>
                     </div>
 
                     <p class="text-[11px] text-gray-500 leading-relaxed">Dica: teste sem redirecionar abrindo a vitrine com <code class="text-purple-300">?noredirect=1</code> no fim da URL.</p>
@@ -515,7 +515,7 @@
                       <option value="product">Página do produto</option>
                     </select>
                   </div>
-                  <p id="scCheckoutStatus" class="text-[10px] text-gray-500 mt-2" hidden></p>
+                  <div id="scCheckoutStatus" class="text-[10px] text-gray-500 mt-2" hidden></div>
                 </div>
 
                 <div class="flex items-center justify-between bg-white/[0.03] rounded-2xl p-4 border border-white/5">

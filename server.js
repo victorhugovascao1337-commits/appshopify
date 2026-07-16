@@ -1861,10 +1861,10 @@ const STOREFRONT_TOKEN_TITLE = 'Painel Contingencia';
 // traduz a falha de criar o Storefront token em algo acionável
 function explainStorefrontError(e) {
   const raw = String(e && e.message || e);
-  if (/extendable|storefront access token|403|unauthenticated|access denied|scope/i.test(raw)) {
-    return 'A loja de checkout ainda não tem a Storefront API liberada. '
-      + 'Custom App: em Configuração → Admin API/Storefront API marque os escopos unauthenticated_* (Storefront API), salve e reinstale o app. '
-      + 'Partner App (OAuth): reconecte a loja para aplicar os novos escopos. Enquanto isso o cliente cai na página do produto.';
+  if (/extendable|storefront access token|403|401|unauthenticated|access denied|scope/i.test(raw)) {
+    return 'O app desta loja não consegue gerar o token da Storefront API. '
+      + 'Caminho mais simples: instale o canal Headless na loja de checkout (App Store → Headless), '
+      + 'copie o "public access token" e cole no campo abaixo. Enquanto isso o cliente cai na página do produto.';
   }
   return raw.slice(0, 180);
 }
@@ -2124,16 +2124,55 @@ app.get('/api/script/checkout-check', async (req, res) => {
     const { f, stores, pool } = await ensureFlowConfig();
     const ativa = pool.find((p) => p.cfg.id === f.state.activeId) || pool[0];
     if (!ativa) return res.json({ ready: false, reason: 'Nenhuma loja de checkout no Flow.' });
+    const st = { id: ativa.id, name: ativa.name, domain: ativa.domain };
+    const hasToken = !!(await loadSfTokens())[ativa.id];
     try {
       await ensureStorefrontToken(ativa);
-      res.json({ ready: true, store: { name: ativa.name, domain: ativa.domain } });
+      res.json({ ready: true, store: st, hasToken });
     } catch (e) {
-      res.json({
-        ready: false,
-        store: { name: ativa.name, domain: ativa.domain },
-        reason: explainStorefrontError(e),
-      });
+      res.json({ ready: false, store: st, hasToken, reason: explainStorefrontError(e) });
     }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ---------- token Storefront colado à mão (canal Headless) ----------
+ * Para lojas onde não dá para criar o token pelo Admin (custom app indisponível,
+ * Storefront API bloqueada no app OAuth): o lojista instala o canal Headless,
+ * copia o "public access token" e cola aqui. Vale por loja de checkout.
+ */
+app.post('/api/stores/:id/storefront-token', async (req, res) => {
+  try {
+    const store = (await loadStores()).find((s) => s.id === req.params.id);
+    if (!store) return res.status(404).json({ error: 'Loja não encontrada.' });
+    const token = String((req.body || {}).token || '').trim();
+
+    // vazio → remover
+    if (!token) {
+      const all = await loadSfTokens();
+      if (all[store.id]) { delete all[store.id]; await db.writeDoc('storefront_tokens', all); }
+      return res.json({ ok: true, removed: true });
+    }
+
+    // valida contra a própria loja antes de salvar
+    const r = await fetch(`https://${store.domain}/api/${API_VERSION}/graphql.json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Shopify-Storefront-Access-Token': token },
+      body: JSON.stringify({ query: '{ shop { name } }' }),
+    });
+    const txt = await r.text().catch(() => '');
+    if (r.status === 401 || r.status === 403) {
+      return res.status(400).json({ error: 'A loja recusou esse token Storefront (401/403). Confira se copiou o "public access token" do canal Headless da loja de checkout.' });
+    }
+    if (!r.ok) return res.status(400).json({ error: `A loja respondeu ${r.status} ao validar o token. ${txt.slice(0, 120)}` });
+    let j; try { j = JSON.parse(txt); } catch { j = null; }
+    if (!j || j.errors || !(j.data && j.data.shop)) {
+      return res.status(400).json({ error: 'Token Storefront inválido para esta loja.' });
+    }
+
+    await saveSfToken(store.id, token);
+    res.json({ ok: true, shop: j.data.shop.name });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
