@@ -382,15 +382,56 @@ app.get('/api/stores', async (req, res) => {
   res.json({ stores: (await loadStores()).map(publicStore) });
 });
 
+/*
+ * Diagnóstico do que foi colado no campo de token.
+ * A Shopify devolve sempre o mesmo 401 genérico, então é melhor explicar
+ * a causa provável antes (o erro mais comum é colar a API key ou o secret).
+ */
+function diagnoseToken(token) {
+  const t = String(token || '').trim();
+  if (!t) return 'Cole o Admin API access token.';
+  if (/\s/.test(t)) return 'O token tem espaço ou quebra de linha — copie de novo, sem sobras.';
+  if (t.startsWith('shpss_')) {
+    return 'Isso é o API secret key (começa com shpss_), não o token. O que o painel precisa é o Admin API access token, que começa com shpat_ e aparece em Credenciais da API depois de Instalar app.';
+  }
+  if (t.startsWith('shpca_')) {
+    return 'Isso é um código de autorização (shpca_), não o Admin API access token (shpat_).';
+  }
+  if (/^[0-9a-f]{32}$/i.test(t)) {
+    return 'Isso parece a API key do app (32 caracteres hexadecimais) — é o que vai no OAuth, não aqui. O painel precisa do Admin API access token, que começa com shpat_ e só aparece depois de clicar em Instalar app.';
+  }
+  if (!t.startsWith('shpat_')) {
+    return 'Isso não parece um Admin API access token: ele começa com shpat_. Vá em Configuração → Credenciais da API → Instalar app e copie o token de acesso do Admin API.';
+  }
+  return null; // formato plausível: deixa a Shopify decidir
+}
+
+// mensagem melhor para os erros mais comuns da Shopify
+function explainShopifyError(e, domain) {
+  const msg = String(e.message || '');
+  if (e.status === 401) {
+    return `A Shopify recusou o token para ${domain}. Causas comuns: (1) o app não foi instalado — clique em Instalar app e gere o token; (2) o token é de outra loja; (3) o token foi revogado ou regerado (o antigo para de valer); (4) foi colada a API key/secret no lugar do token.`;
+  }
+  if (e.status === 403) {
+    return `Token aceito, mas sem permissão em ${domain}. Marque os escopos read_orders e read_products em Escopos do Admin API, salve, clique em Instalar app de novo e gere um token novo — o antigo não ganha as permissões.`;
+  }
+  if (e.status === 404) {
+    return `Loja não encontrada: ${domain}. Confira o endereço .myshopify.com (não é o domínio personalizado nem o seu e-mail).`;
+  }
+  return msg;
+}
+
 app.post('/api/stores/test', async (req, res) => {
   const domain = normalizeDomain(req.body.domain);
   const token = String(req.body.token || '').trim();
   if (!domain || !token) return res.status(400).json({ ok: false, error: 'Informe domínio e token.' });
+  const problema = diagnoseToken(token);
+  if (problema) return res.json({ ok: false, error: problema });
   try {
     const { data } = await shopifyFetch({ domain, token }, 'shop.json');
     res.json({ ok: true, shop: { name: data.shop.name, currency: data.shop.currency, domain: data.shop.myshopify_domain } });
   } catch (e) {
-    res.json({ ok: false, error: e.message });
+    res.json({ ok: false, error: explainShopifyError(e, domain) });
   }
 });
 
@@ -399,6 +440,8 @@ app.post('/api/stores', async (req, res) => {
   const token = String(req.body.token || '').trim();
   const name = String(req.body.name || '').trim() || domain;
   if (!domain || !token) return res.status(400).json({ error: 'Informe domínio e token.' });
+  const problema = diagnoseToken(token);
+  if (problema) return res.status(400).json({ error: problema });
   const stores = await loadStores();
   if (stores.some((s) => s.domain === domain)) return res.status(409).json({ error: 'Essa loja já foi adicionada.' });
   let currency = 'BRL';
@@ -406,7 +449,7 @@ app.post('/api/stores', async (req, res) => {
     const { data } = await shopifyFetch({ domain, token }, 'shop.json');
     currency = data.shop.currency;
   } catch (e) {
-    return res.status(400).json({ error: `Não conectou: ${e.message}` });
+    return res.status(400).json({ error: explainShopifyError(e, domain) });
   }
   const store = {
     id: crypto.randomUUID(),
