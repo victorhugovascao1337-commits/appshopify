@@ -1,0 +1,16 @@
+{
+  "name": "shopify-multi-dashboard",
+  "version": "1.0.0",
+  "description": "Dashboard multi-loja para Shopify (contingência) — vendas, pedidos ao vivo e analytics agregados",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --env-file-if-exists=.env server.js"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Painel Contingência — Shopify</title>
+<link rel="stylesheet" href="styles.css">
+<!-- deps da aba Flow (DarkRouter). preflight off p/ não afetar o tema claro do resto -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>if (window.tailwind) tailwind.config = { corePlugins: { preflight: false } };</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/animejs@3.2.1/lib/anime.min.js"></script>
+</head>
+<body>
+<div class="bg-fx" aria-hidden="true"></div>
+<div class="layout">
+
+<aside class="sidebar">
+  <div class="side-brand">
+    <div class="brand-mark">C</div>
+    <div>
+      <div class="sb-name">Painel</div>
+      <div class="sb-sub">Contingência</div>
+    </div>
+  </div>
+  <nav class="side-nav" role="tablist">
+    <button class="tab-btn active" data-tab="overview" role="tab"><span class="tb-ico">📊</span><span>Visão geral</span></button>
+    <button class="tab-btn" data-tab="lojas" role="tab"><span class="tb-ico">🏪</span><span>Lojas</span></button>
+    <button class="tab-btn" data-tab="command" role="tab"><span class="tb-ico"><span class="live-dot"></span></span><span>Ao vivo</span></button>
+    <button class="tab-btn" data-tab="flow" role="tab"><span class="tb-ico">🔀</span><span>Flow</span></button>
+  </nav>
+  <div class="side-bottom">
+    <button class="control btn-primary" id="manageBtn">⚡ Gerenciar lojas</button>
+  </div>
+</aside>
+
+<div class="app">
+
+  <header class="hero">
+    <div class="hero-left">
+      <div class="hero-top">
+        <span class="hero-date" id="heroDate"></span>
+      </div>
+      <h1>Olá 👋 <span class="grad-text">bem-vindo de volta</span></h1>
+      <p class="hero-sub" id="storeCount">—</p>
+    </div>
+    <div class="controls">
+      <select id="storeFilter" class="control" aria-label="Filtrar por loja">
+        <option value="all">Todas as lojas</option>
+      </select>
+      <div class="segmented" role="group" aria-label="Período">
+        <button data-range="today" class="active">Hoje</button>
+        <button data-range="yesterday">Ontem</button>
+        <button data-range="7d">7 dias</button>
+        <button data-range="30d">30 dias</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="error-banner" id="errorBanner" hidden></div>
+
+  <div id="page-overview">
+
+  <section class="tiles">
+    <div class="tile tile-hero">
+      <div class="tile-head">
+        <span class="tile-icon i-green">◎</span>
+        <span class="tile-label">Vendas totais</span>
+        <button class="goal-edit" id="goalEdit" title="Definir meta do dia">✎ meta</button>
+      </div>
+      <div class="tile-value hero" id="tSales">—</div>
+      <div class="tile-delta" id="tSalesDelta"></div>
+      <div class="goal-meter" id="goalMeter" hidden>
+        <div class="goal-track"><div class="goal-fill" id="goalFill"></div></div>
+        <div class="goal-text" id="goalText"></div>
+      </div>
+    </div>
+    <div class="tile">
+      <div class="tile-head"><span class="tile-icon i-cyan">▣</span><span class="tile-label">Pedidos</span></div>
+      <div class="tile-value" id="tOrders">—</div>
+      <div class="tile-delta" id="tOrdersDelta"></div>
+    </div>
+    <div class="tile">
+      <div class="tile-head"><span class="tile-icon i-violet">◇</span><span class="tile-label">Ticket médio</span></div>
+      <div class="tile-value" id="tAov">—</div>
+      <div class="tile-delta" id="tAovDelta"></div>
+    </div>
+    <div class="tile">
+      <div class="tile-head"><span class="tile-icon i-amber">✦</span><span class="tile-label">Itens vendidos</span></div>
+      <div class="tile-value" id="tItems">—</div>
+      <div class="tile-delta muted" id="tItemsSub"></div>
+    </div>
+  </section>
+
+  <section class="card chart-card">
+    <div class="card-head">
+      <h2>Receita <span class="badge badge-live-sm"><span class="live-dot"></span>TEMPO REAL</span></h2>
+      <div class="chart-head-right">
+        <div class="legend" id="chartLegend"></div>
+        <div class="segmented segmented-mini" role="group" aria-label="Modo do gráfico">
+          <button data-mode="total" class="active">Total</button>
+          <button data-mode="stores">Por loja</button>
+        </div>
+      </div>
+    </div>
+    <div class="chart-wrap" id="chartWrap">
+      <svg id="chart" role="img" aria-label="Gráfico de receita ao longo do tempo"></svg>
+      <div class="chart-tooltip" id="chartTooltip" hidden></div>
+    </div>
+  </section>
+
+  <section class="mid-grid">
+    <div class="card">
+      <div class="card-head">
+        <h2>Suas lojas</h2>
+        <span class="card-sub" id="storesConnected"></span>
+      </div>
+      <ul class="stores-card" id="storesCard"></ul>
+      <button class="connect-btn" id="connectBtn">+ Conectar nova loja</button>
+    </div>
+
+    <div class="card live-card">
+      <div class="card-head">
+        <h2>Atividade recente <span class="badge badge-live-sm"><span class="live-dot"></span>LIVE</span></h2>
+        <div class="live-head-right">
+          <button class="sound-toggle" id="soundToggle" title="Som de novo pedido">🔔</button>
+          <span class="live-updated" id="liveUpdated"></span>
+        </div>
+      </div>
+      <div class="live-stats">
+        <div class="live-stat">
+          <div class="tile-label">Pedidos · 60 min</div>
+          <div class="tile-value sm" id="liveOrders">—</div>
+        </div>
+        <div class="live-stat">
+          <div class="tile-label">Receita · 60 min</div>
+          <div class="tile-value sm" id="liveSales">—</div>
+        </div>
+      </div>
+      <ul class="live-feed" id="liveFeed">
+        <li class="feed-empty">Aguardando pedidos…</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Pedidos recentes</h2>
+      <span class="card-sub" id="recentSub"></span>
+    </div>
+    <div class="table-scroll">
+      <table class="data-table" id="recentTable">
+        <thead>
+          <tr><th>Pedido</th><th>Loja</th><th>Cidade</th><th class="num">Valor</th><th>Status</th><th class="num">Quando</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="bottom-grid">
+    <div class="card">
+      <div class="card-head"><h2>Vendas por loja</h2></div>
+      <div class="table-scroll">
+        <table class="data-table" id="storeTable">
+          <thead>
+            <tr><th>Loja</th><th class="num">Pedidos</th><th class="num">Vendas</th><th class="num">Ticket</th><th class="share-col">Participação</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Produtos mais vendidos</h2></div>
+      <div class="table-scroll">
+        <table class="data-table" id="productTable">
+          <thead>
+            <tr><th>Produto</th><th class="num">Qtd.</th><th class="num">Vendas</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  </div><!-- /page-overview -->
+
+  <div id="page-command" hidden>
+
+    <section class="cc-grid">
+      <div class="card">
+        <div class="card-head">
+          <h2>⚠ Alertas</h2>
+          <span class="badge badge-neon" id="alertCount">0</span>
+        </div>
+        <ul class="alert-list" id="alertList"></ul>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Saúde por loja</h2>
+          <span class="card-sub">receita · pedidos · risco</span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table" id="healthTable">
+            <thead>
+              <tr><th>Loja</th><th>Status</th><th class="num">Receita</th><th class="num">Pedidos</th><th class="num">Último pedido</th><th>Risco</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="globe-grid">
+      <div class="card globe-card">
+        <div class="card-head">
+          <h2>Pedidos no mundo <span class="badge badge-live-sm"><span class="live-dot"></span>LIVE</span></h2>
+          <span class="card-sub" id="globeSub"></span>
+        </div>
+        <div class="globe-wrap"><canvas id="globe"></canvas></div>
+        <div class="globe-caption" id="globeCaption">Aguardando pedidos…</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Ao vivo <span class="badge badge-live-sm"><span class="live-dot"></span>LIVE</span></h2>
+          <span class="live-updated" id="liveUpdated2"></span>
+        </div>
+        <div class="country-label">Por país</div>
+        <ul class="country-list" id="countryList"><li class="feed-empty">—</li></ul>
+        <div class="country-label">Pedidos recentes</div>
+        <ul class="live-feed" id="liveFeed2">
+          <li class="feed-empty">Aguardando pedidos…</li>
+        </ul>
+      </div>
+    </section>
+
+  </div><!-- /page-command -->
+
+  <div id="page-flow" hidden>
+    <div class="dr-root">
+      <style>
+        .dr-root { color: var(--text-primary); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--page); margin: -28px -24px -60px; padding: 28px 24px 60px; min-height: calc(100vh); }
+        @media (max-width: 980px) { .dr-root { margin: -28px -16px -60px; padding: 24px 16px 50px; } }
+        .dr-root .material-symbols-outlined { font-family: 'Material Symbols Outlined'; font-weight: normal; font-style: normal; line-height: 1; letter-spacing: normal; text-transform: none; display: inline-block; white-space: nowrap; word-wrap: normal; direction: ltr; }
+        .dr-root .icon-filled { font-variation-settings: 'FILL' 1; }
+        @keyframes dr-spin { to { transform: rotate(360deg); } }
+        .dr-spin { animation: dr-spin 20s linear infinite; }
+        .dr-spin-rev { animation: dr-spin 20s linear infinite reverse; }
+        #flow-canvas path { transition: stroke .4s ease, stroke-width .4s ease, opacity .4s ease; }
+        .node-port { width: 10px; height: 10px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 15px #22c55e, 0 0 30px rgba(34,197,94,.6); z-index: 30; border: 2px solid #000; }
+        .node-port.port-blue { background: #3b82f6; box-shadow: 0 0 15px #3b82f6, 0 0 30px rgba(59,130,246,.6); }
+        .flow-path { fill: none; stroke: rgba(16,40,80,0.14); stroke-width: 2; stroke-linecap: round; }
+        .flow-path.active { stroke: #12b76a; stroke-width: 2.5; filter: drop-shadow(0 0 6px rgba(18,183,106,.55)) drop-shadow(0 0 12px rgba(18,183,106,.3)); }
+        .flow-pulse { fill: #12b76a; filter: drop-shadow(0 0 5px #12b76a) drop-shadow(0 0 12px rgba(18,183,106,.8)); }
+        @keyframes dr-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+        .dr-shimmer { animation: dr-shimmer 2s infinite; }
+        .dr-node-card { transition: transform .35s ease, box-shadow .35s ease, border-color .35s ease; }
+        .dr-node-card:hover { transform: translateY(-4px) scale(1.01); box-shadow: var(--shadow-pop); }
+        .pool-sortable-item.sortable-ghost { opacity: .3; }
+        .pool-sortable-item.sortable-drag { opacity: 1; z-index: 9999; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
+        .drag-handle { cursor: grab; } .drag-handle:active { cursor: grabbing; }
+        .dr-root ::-webkit-scrollbar { width: 8px; height: 8px; } .dr-root ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 4px; }
+        .dr-stat { background: var(--surface-solid); border: 1px solid var(--border); box-shadow: var(--shadow-card); transition: transform .3s ease, border-color .3s ease; }
+        .dr-stat:hover { transform: translateY(-4px); border-color: var(--border-accent); }
+
+        /* ===== recolorir DarkRouter → tema claro Airy Tech (mesmo layout, cores do app) ===== */
+        /* superfícies escuras → claras */
+        .dr-root .bg-black, .dr-root [class*="bg-black\/"] { background-color: var(--surface-solid) !important; }
+        .dr-root .dr-node-card { background: var(--surface-solid) !important; }
+        .dr-root .rounded-full[class*="from-[#0d1117]"] { background: linear-gradient(180deg, #eef5ff, #ffffff) !important; }
+        /* remove gradientes de fundo escuros dos cards/painéis */
+        .dr-root .dr-node-card[class*="from-[#0d1117]"] { background-image: none !important; }
+        /* fills e bordas brancas translúcidas → claras */
+        .dr-root [class*="bg-white\/"] { background-color: rgba(16,40,80,0.035) !important; }
+        .dr-root [class*="border-white\/"] { border-color: var(--border) !important; }
+        /* textos: branco/claro → escuro do app */
+        .dr-root .text-white { color: var(--text-primary) !important; }
+        .dr-root .text-gray-200, .dr-root .text-gray-300, .dr-root .text-gray-400 { color: var(--text-secondary) !important; }
+        .dr-root .text-gray-500, .dr-root .text-gray-600, .dr-root .text-gray-700 { color: var(--text-muted) !important; }
+        /* inputs/selects/textarea escuros → claros */
+        .dr-root input, .dr-root select, .dr-root textarea { background: #f8fafc !important; color: var(--text-primary) !important; border-color: var(--border) !important; }
+        /* acentos de texto mais escuros p/ legibilidade no fundo claro */
+        .dr-root .text-emerald-400, .dr-root .text-emerald-300 { color: #067647 !important; }
+        .dr-root .text-blue-400, .dr-root .text-blue-300 { color: #175cd3 !important; }
+        .dr-root .text-purple-400, .dr-root .text-violet-400 { color: #6941c6 !important; }
+        .dr-root .text-cyan-400, .dr-root .text-cyan-300 { color: #0e7490 !important; }
+        .dr-root .text-sky-400 { color: #0284c7 !important; }
+        .dr-root .text-orange-400 { color: #c2410c !important; }
+        .dr-root .text-pink-400 { color: #be185d !important; }
+        .dr-root .text-rose-400 { color: #be123c !important; }
+        .dr-root .text-amber-400 { color: #b45309 !important; }
+        .dr-root .text-red-400 { color: #b42318 !important; }
+        /* mantém texto BRANCO nos botões com gradiente saturado (badge do pool, consolidação, toggle) */
+        .dr-root [class*="from-emerald-600"], .dr-root [class*="from-emerald-600"] *,
+        .dr-root [class*="from-cyan-600"], .dr-root [class*="from-cyan-600"] *,
+        .dr-root [class*="from-violet-600"], .dr-root [class*="from-violet-600"] * { color: #fff !important; }
+        /* sombras escuras pesadas → sombra suave do app */
+        .dr-root .shadow-2xl { box-shadow: var(--shadow-card) !important; }
+        /* watermarks de ícone (branco/10) ficam cinza claro */
+        .dr-root .opacity-10 { opacity: .06 !important; }
+      </style>
+
+      <div class="space-y-8 pb-10" id="flow-main">
+
+        <!-- 1. Header + Breadcrumbs -->
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+          <div>
+            <div class="flex items-center gap-2 text-xs font-medium text-gray-500 mb-4">
+              <span class="flex items-center gap-1.5"><span class="material-symbols-outlined text-base">home</span>Dashboard</span>
+              <span class="material-symbols-outlined text-sm">chevron_right</span>
+              <span class="text-gray-300" id="dr-crumb">Flow</span>
+            </div>
+            <div class="flex items-center gap-3 mb-3">
+              <span class="px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-black uppercase tracking-widest">● Ativa</span>
+              <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-white/5 text-gray-400 border border-white/10" id="dr-op-id">#flow</span>
+              <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 hidden sm:inline">SHOPIFY</span>
+            </div>
+            <h1 class="text-4xl md:text-5xl font-bold text-white tracking-tight mb-2" id="dr-title">Centro de Roteamento</h1>
+            <p class="text-gray-400 text-lg max-w-2xl font-light" id="dr-subtitle">vitrine → Pool de Checkout</p>
+          </div>
+          <div class="flex items-center gap-3">
+            <button onclick="drIllustrative()" class="w-12 h-12 rounded-2xl bg-white/5 hover:bg-red-500/20 text-gray-400 hover:text-red-400 border border-white/10 hover:border-red-500/30 flex items-center justify-center transition-all group" title="Excluir Operação"><span class="material-symbols-outlined text-xl group-hover:scale-110 transition-transform">delete</span></button>
+            <button id="flowAnalyticsBtn" class="flex items-center gap-3 px-5 py-3.5 rounded-2xl bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 font-bold text-sm tracking-wide border border-purple-500/30 hover:border-purple-500/50 transition-all group"><span class="material-symbols-outlined group-hover:scale-110 transition-transform">analytics</span><span class="hidden sm:inline">Analytics</span></button>
+            <button id="flowPayBtn" class="flex items-center gap-3 px-5 py-3.5 rounded-2xl bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 font-bold text-sm tracking-wide border border-sky-500/30 hover:border-sky-500/50 transition-all group"><span class="material-symbols-outlined group-hover:scale-110 transition-transform">account_balance_wallet</span><span class="hidden sm:inline">Payouts</span></button>
+            <button id="flowSyncBtn" class="flex items-center gap-3 px-6 py-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-bold text-sm tracking-wide shadow-[0_0_20px_rgba(16,185,129,0.1)] hover:bg-emerald-500/20 hover:border-emerald-500/40 hover:text-emerald-300 transition-all group"><span class="material-symbols-outlined icon-filled group-hover:scale-110 transition-transform">save</span><span class="hidden sm:inline">Salvar</span></button>
+          </div>
+        </div>
+
+        <!-- 2. Mission Control HUD -->
+        <div class="relative w-full rounded-3xl overflow-hidden border border-white/5 shadow-2xl">
+          <div class="absolute inset-0 bg-black"></div>
+          <div class="absolute inset-0 opacity-[0.03]" style="background-image: radial-gradient(rgba(255,255,255,0.25) 1px, transparent 1px); background-size: 32px 32px;"></div>
+          <div class="relative z-10 py-10 px-6 md:px-16">
+            <div class="flex flex-col lg:flex-row items-center justify-between gap-10">
+
+              <div class="flex flex-col items-center group flex-1">
+                <div class="relative mb-5">
+                  <div class="absolute -inset-3 rounded-full border-2 border-dashed border-blue-500/20 dr-spin"></div>
+                  <div class="w-24 h-24 rounded-2xl bg-gradient-to-br from-blue-500/20 to-cyan-500/10 border border-blue-500/30 flex items-center justify-center shadow-[0_0_30px_rgba(59,130,246,0.2)] group-hover:scale-105 transition-transform duration-500"><span class="material-symbols-outlined text-4xl text-blue-400">storefront</span></div>
+                </div>
+                <span class="text-[10px] text-blue-400/80 uppercase tracking-[0.3em] font-bold mb-1">LOJA VITRINE</span>
+                <p class="text-[9px] text-gray-500 mb-2 max-w-[150px] text-center leading-tight">Onde os clientes veem os produtos</p>
+                <h3 class="text-xl font-bold text-white text-center mb-1" id="dr-vitrine-name">—</h3>
+                <p class="text-xs text-gray-500 font-mono" id="dr-vitrine-domain">—</p>
+              </div>
+
+              <div class="flex flex-col items-center relative flex-shrink-0">
+                <div class="hidden lg:block absolute top-1/2 -translate-y-1/2 left-0 w-20 h-[2px] -translate-x-full"><div class="h-full bg-gradient-to-r from-transparent to-emerald-500/30"></div><div class="absolute inset-0 h-full bg-gradient-to-r from-transparent to-emerald-400 animate-pulse"></div></div>
+                <div class="hidden lg:block absolute top-1/2 -translate-y-1/2 right-0 w-20 h-[2px] translate-x-full"><div class="h-full bg-gradient-to-l from-transparent to-emerald-500/30"></div><div class="absolute inset-0 h-full bg-gradient-to-l from-transparent to-emerald-400 animate-pulse"></div></div>
+                <div class="relative w-28 h-28 rounded-full bg-gradient-to-br from-[#0d1117] to-black border-2 border-emerald-500/40 flex items-center justify-center shadow-[0_0_40px_rgba(16,185,129,0.4)]">
+                  <div class="absolute inset-2 rounded-full border border-white/5"></div>
+                  <span class="material-symbols-outlined text-4xl text-emerald-400 icon-filled">check_circle</span>
+                  <div class="absolute -inset-2 rounded-full border-2 border-emerald-500/30 animate-ping"></div>
+                </div>
+                <div class="mt-6 px-6 py-2.5 rounded-2xl bg-gradient-to-r from-emerald-500/20 to-green-500/10 border border-emerald-500/40"><span class="text-emerald-400 text-[11px] font-black uppercase tracking-[0.2em] flex items-center gap-2"><span class="flex h-2 w-2 relative"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span><span id="dr-hud-status">ROTEAMENTO ATIVO</span></span></div>
+                <button onclick="drToggleStatus()" id="dr-status-link" class="mt-4 text-xs font-medium text-gray-500 hover:text-white transition-colors underline underline-offset-4 decoration-dashed">Pausar Operação</button>
+                <p class="text-[9px] text-gray-600 mt-2 max-w-[180px] text-center leading-tight" id="dr-active-caption">Clientes estão sendo redirecionados para o checkout</p>
+              </div>
+
+              <div class="flex flex-col items-center group flex-1">
+                <div class="relative mb-5">
+                  <div class="absolute -inset-3 rounded-full border-2 border-dashed border-emerald-500/20 dr-spin-rev"></div>
+                  <div class="w-24 h-24 rounded-2xl bg-gradient-to-br from-emerald-500/20 to-green-500/10 border border-emerald-500/30 flex items-center justify-center shadow-[0_0_30px_rgba(16,185,129,0.2)] group-hover:scale-105 transition-transform duration-500"><span class="material-symbols-outlined text-4xl text-emerald-400">shopping_cart_checkout</span></div>
+                  <div class="absolute -top-2 -right-2 px-2.5 py-1 rounded-full bg-gradient-to-r from-emerald-600 to-green-600 text-[10px] font-black text-white shadow-lg" id="dr-pool-badge">0</div>
+                </div>
+                <span class="text-[10px] text-emerald-400/80 uppercase tracking-[0.3em] font-bold mb-1">CHECKOUT POOL</span>
+                <p class="text-[9px] text-gray-500 mb-2 max-w-[150px] text-center leading-tight">Lojas que processam os pagamentos</p>
+                <h3 class="text-xl font-bold text-white text-center mb-1" id="dr-online">0/0 Online</h3>
+                <p class="text-xs text-gray-500 font-mono" id="dr-checkout-domain">—</p>
+              </div>
+
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Stats -->
+        <div class="grid grid-cols-2 lg:grid-cols-3 gap-4">
+          <div class="dr-stat rounded-2xl p-5 relative overflow-hidden group"><div class="absolute top-0 right-0 p-4 opacity-10"><span class="material-symbols-outlined text-5xl text-white">calendar_today</span></div><div class="w-12 h-12 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-4"><span class="material-symbols-outlined text-blue-400">calendar_today</span></div><h3 class="text-2xl font-black text-white mb-1" id="dr-created">—</h3><p class="text-gray-500 text-xs font-medium uppercase tracking-wider">Criado em</p></div>
+          <div class="dr-stat rounded-2xl p-5 relative overflow-hidden group"><div class="absolute top-0 right-0 p-4 opacity-10"><span class="material-symbols-outlined text-5xl text-white">schedule</span></div><div class="w-12 h-12 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center mb-4"><span class="material-symbols-outlined text-purple-400">schedule</span></div><h3 class="text-2xl font-black text-white mb-1" id="dr-updated">—</h3><p class="text-gray-500 text-xs font-medium uppercase tracking-wider">Atualizado</p></div>
+          <div class="dr-stat rounded-2xl p-5 relative overflow-hidden group"><div class="absolute top-0 right-0 p-4 opacity-10"><span class="material-symbols-outlined text-5xl text-white">inventory_2</span></div><div class="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mb-4"><span class="material-symbols-outlined text-emerald-400 icon-filled">inventory_2</span></div><div class="flex items-center gap-2"><h3 class="text-2xl font-black text-white" id="dr-stores">0</h3><span class="flex h-2 w-2 relative"><span class="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span></div><p class="text-gray-500 text-xs font-medium uppercase tracking-wider">Lojas no flow</p></div>
+        </div>
+        <div class="grid grid-cols-2 lg:grid-cols-3 gap-4">
+          <div class="dr-stat rounded-2xl p-5 relative overflow-hidden group"><div class="absolute top-0 right-0 p-4 opacity-10"><span class="material-symbols-outlined text-5xl text-white">visibility</span></div><div class="w-12 h-12 rounded-xl bg-orange-500/10 border border-orange-500/20 flex items-center justify-center mb-4"><span class="material-symbols-outlined text-orange-400">visibility</span></div><h3 class="text-2xl font-black text-white mb-1" id="dr-views">0</h3><p class="text-gray-500 text-xs font-medium uppercase tracking-wider">Visualizações</p></div>
+          <div class="dr-stat rounded-2xl p-5 relative overflow-hidden group"><div class="absolute top-0 right-0 p-4 opacity-10"><span class="material-symbols-outlined text-5xl text-white">ads_click</span></div><div class="w-12 h-12 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-4"><span class="material-symbols-outlined text-blue-400">ads_click</span></div><h3 class="text-2xl font-black text-white mb-1" id="dr-clicks">0</h3><p class="text-gray-500 text-xs font-medium uppercase tracking-wider">Cliques Checkout</p></div>
+          <div class="dr-stat rounded-2xl p-5 relative overflow-hidden group"><div class="absolute top-0 right-0 p-4 opacity-10"><span class="material-symbols-outlined text-5xl text-white">shopping_bag</span></div><div class="w-12 h-12 rounded-xl bg-pink-500/10 border border-pink-500/20 flex items-center justify-center mb-4"><span class="material-symbols-outlined text-pink-400">shopping_bag</span></div><h3 class="text-2xl font-black text-white mb-1" id="dr-sales">0</h3><p class="text-gray-500 text-xs font-medium uppercase tracking-wider">Vendas Totais</p></div>
+        </div>
+
+        <!-- 4. Routing Center -->
+        <div class="relative rounded-3xl overflow-hidden border border-white/5 shadow-2xl" id="routing-center">
+          <div class="absolute inset-0 bg-black"></div>
+          <div class="absolute inset-0 opacity-[0.03]" style="background-image: radial-gradient(rgba(255,255,255,0.5) 1px, transparent 1px); background-size: 40px 40px;"></div>
+
+          <div class="relative z-10 p-8 pb-0">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div class="flex items-center gap-3">
+                <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500/20 to-green-500/10 flex items-center justify-center border border-emerald-500/30 shadow-[0_0_30px_rgba(16,185,129,0.15)]"><span class="material-symbols-outlined text-2xl text-emerald-400 icon-filled">bolt</span></div>
+                <div><h2 class="text-2xl font-black text-white tracking-tight">Centro de Roteamento</h2><div class="flex items-center gap-2 mt-1"><span class="flex h-2 w-2 relative"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span><span class="text-[11px] text-gray-400 font-medium uppercase tracking-widest">Fluxo Inteligente de Dados</span></div></div>
+              </div>
+              <label class="flex items-center gap-2 text-xs text-gray-400">Loja vitrine:<select id="vitrineSelect" class="bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-gray-200 text-xs focus:outline-none focus:border-emerald-500/50"></select></label>
+            </div>
+          </div>
+
+          <div class="relative z-10 p-8 pt-16">
+            <div class="relative flex flex-col items-center">
+              <div class="relative z-20 mb-24" id="source-node">
+                <div class="relative bg-black/95 border border-blue-500/30 rounded-2xl p-6 min-w-[320px] shadow-[0_0_50px_rgba(59,130,246,0.15)]">
+                  <div class="flex items-center gap-5 mb-4">
+                    <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500/20 to-cyan-500/10 flex items-center justify-center border border-blue-500/30 shadow-[0_0_20px_rgba(59,130,246,0.2)]"><span class="material-symbols-outlined text-3xl text-blue-400">storefront</span></div>
+                    <div class="flex-1"><div class="flex items-center gap-2 mb-2"><span class="px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-[9px] font-black text-blue-400 uppercase tracking-widest">Origem</span><span class="flex h-2 w-2 relative"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span></span></div><h3 class="text-white font-bold text-lg leading-tight mb-1" id="dr-source-name">—</h3><p class="text-[11px] text-gray-500 font-mono truncate max-w-[200px] flex items-center gap-1.5"><span class="material-symbols-outlined text-sm text-gray-600">link</span><span id="dr-source-domain">—</span></p></div>
+                  </div>
+                  <button id="amSyncProductsBtn" class="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 hover:border-blue-400/50 text-blue-400 hover:text-blue-300 text-[11px] font-bold uppercase tracking-wide transition-all"><span class="material-symbols-outlined text-sm">sync</span><span>Sincronizar Produtos</span></button>
+                  <div class="node-port port-blue" style="position:absolute; bottom:-5px; left:50%; transform:translateX(-50%);"></div>
+                </div>
+              </div>
+              <svg class="absolute inset-0 w-full h-full pointer-events-none z-10" id="flow-canvas" style="overflow:visible; width:100%; height:100%;"></svg>
+              <div class="w-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 relative z-20" id="destination-grid"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. Config panels -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+          <div class="space-y-6">
+            <!-- Status -->
+            <div class="dr-stat rounded-3xl p-6 relative overflow-hidden group">
+              <div class="flex items-center justify-between mb-6">
+                <div class="flex items-center gap-4"><div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500/20 to-green-500/10 flex items-center justify-center border border-emerald-500/30 shadow-[0_0_20px_rgba(16,185,129,0.15)]"><span class="material-symbols-outlined text-2xl text-emerald-400 icon-filled">power_settings_new</span></div><div><h3 class="text-xl font-black text-white tracking-tight">Status</h3><p class="text-xs text-gray-500">Controle geral da operação</p></div></div>
+                <button onclick="drToggleStatus()" id="status-toggle-btn" data-status="running" class="relative inline-flex h-8 w-16 flex-shrink-0 cursor-pointer items-center rounded-full transition-all duration-300 bg-gradient-to-r from-emerald-600 to-green-500 shadow-[0_0_20px_rgba(16,185,129,0.4)] border border-emerald-500/30"><span id="status-toggle-knob" class="inline-block h-6 w-6 rounded-full bg-white shadow-lg transform transition-all duration-300 translate-x-9"></span></button>
+              </div>
+              <div class="flex items-center gap-3 p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20" id="status-text-container"><span class="flex h-3 w-3 relative"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span></span><span class="text-sm font-bold text-emerald-400">Operação Ativa e Roteando</span><span class="text-[10px] text-gray-500 ml-auto">Clientes serão redirecionados</span></div>
+            </div>
+
+            <!-- Configurações -->
+            <div class="dr-stat rounded-3xl p-6 relative overflow-hidden group">
+              <div class="flex items-center gap-4 mb-6"><div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-purple-500/20 to-violet-500/10 flex items-center justify-center border border-purple-500/30 shadow-[0_0_20px_rgba(139,92,246,0.15)]"><span class="material-symbols-outlined text-2xl text-purple-400">settings</span></div><div><h3 class="text-xl font-black text-white tracking-tight">Configurações</h3><p class="text-xs text-gray-500">Ajustes finos do roteamento</p></div></div>
+              <div class="flex items-center justify-between bg-gradient-to-r from-white/[0.03] to-white/[0.06] rounded-2xl p-4 border border-white/5 hover:border-purple-500/30 transition-all group/item">
+                <div class="flex items-center gap-4"><div class="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center border border-purple-500/20 shrink-0"><span class="material-symbols-outlined text-xl text-purple-400">translate</span></div><div><p class="text-sm font-bold text-gray-200">Espelhar Idioma URL</p><p class="text-[10px] text-amber-500">Depende do redirect — indisponível sem URL pública</p></div></div>
+                <label class="relative inline-flex items-center cursor-pointer"><input type="checkbox" data-persist="mirror_locale" class="sr-only peer"><div class="w-14 h-7 bg-white/5 rounded-full peer peer-checked:after:translate-x-7 after:content-[''] after:absolute after:top-[3px] after:left-[3px] after:bg-gray-500 after:rounded-full after:h-[22px] after:w-[22px] after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-600 peer-checked:to-violet-500 peer-checked:after:bg-white peer-checked:shadow-[0_0_20px_rgba(139,92,246,0.4)] border border-white/10 peer-checked:border-purple-500/30 transition-all"></div></label>
+              </div>
+              <div class="mt-4 rounded-2xl p-4 bg-gradient-to-r from-cyan-500/10 to-blue-500/5 border border-cyan-500/20">
+                <div class="flex items-center justify-between gap-4 mb-3">
+                  <div class="flex items-center gap-3"><div class="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center"><span class="material-symbols-outlined text-cyan-300 text-xl">shopping_bag</span></div><div><p class="text-sm font-bold text-white">Pós-compra Digital</p><p class="text-[10px] text-cyan-100/70" id="ppStatusText">Inativo — ative para criar o pedido digital automático</p></div></div>
+                  <label class="relative inline-flex items-center cursor-pointer"><input type="checkbox" id="ppEnabled" class="sr-only peer"><div class="w-14 h-7 bg-white/5 rounded-full peer peer-checked:after:translate-x-7 after:content-[''] after:absolute after:top-[3px] after:left-[3px] after:bg-gray-500 after:rounded-full after:h-[22px] after:w-[22px] after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-cyan-600 peer-checked:to-blue-500 peer-checked:after:bg-white border border-white/10 peer-checked:border-cyan-500/30 transition-all"></div></label>
+                </div>
+                <div class="space-y-3">
+                  <div class="rounded-xl border border-white/10 bg-black/25 px-3 py-2"><p class="text-xs font-bold text-gray-300" id="ppExecTitle">Ainda sem execuções</p><p class="text-[10px] text-gray-500 mt-1" id="ppExecDetails">Nenhum pedido digital foi gerado até agora.</p><p class="text-[10px] text-cyan-200/70 mt-1" id="ppExecStats">Total: 0 | Criados: 0 | Falhas: 0</p></div>
+                  <div class="rounded-xl border border-white/10 bg-black/25 px-3 py-2" id="ppCoverageWrap"><p class="text-[11px] text-gray-400" id="ppCoverageText">Escolha o produto digital para checar a cobertura no pool.</p><p class="text-[10px] text-amber-300 mt-1" id="ppCoverageMissing"></p></div>
+                  <div><label class="text-[10px] uppercase tracking-wider text-gray-400 font-bold block mb-1">Produto digital (variante)</label><select id="ppVariant" class="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/50"><option value="">Selecione o produto digital</option></select></div>
+                  <div class="grid grid-cols-2 gap-3"><div><label class="text-[10px] uppercase tracking-wider text-gray-400 font-bold block mb-1">Quantidade</label><input type="number" id="ppQty" min="1" max="10" value="1" class="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/50"></div><div><label class="text-[10px] uppercase tracking-wider text-gray-400 font-bold block mb-1">Tag de proteção</label><input type="text" id="ppTag" value="dr:auto-digital" class="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-cyan-500/50"></div></div>
+                  <button id="ppSaveBtn" class="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 font-bold text-xs uppercase tracking-wider hover:bg-cyan-500/20 transition-all"><span class="material-symbols-outlined text-sm">save</span><span>Salvar e rodar agora</span></button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Script -->
+            <div class="dr-stat rounded-3xl overflow-hidden relative group">
+              <div class="p-5 border-b border-white/5 flex items-center justify-between"><div class="flex items-center gap-4"><div class="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/20 to-violet-500/10 flex items-center justify-center border border-purple-500/30"><span class="material-symbols-outlined text-xl text-purple-400">magic_button</span></div><div><h3 class="text-lg font-bold text-white">Script de Rastreamento</h3><p class="text-[10px] text-gray-500"><span class="text-amber-400">Indisponível</span> <span class="text-gray-600">— requer painel em URL pública</span></p></div></div><button onclick="drIllustrative()" class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-400 font-bold text-xs uppercase tracking-wider hover:bg-purple-500/20 transition-all"><span class="material-symbols-outlined text-sm">sync</span><span>Sincronizar</span></button></div>
+              <div class="p-5 bg-white/[0.02]">
+                <div class="flex items-start gap-4"><div class="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 flex-shrink-0"><span class="material-symbols-outlined text-emerald-400">auto_awesome</span></div><div class="flex-1"><h4 class="text-sm font-bold text-white mb-1">Injeção Automática</h4><p class="text-[11px] text-gray-500 leading-relaxed">Injetaria o script no <code class="text-purple-400">theme.liquid</code> da vitrine (precisa do escopo <code class="text-purple-400">write_themes</code>). <b class="text-amber-400">Só funciona com o painel publicado numa URL pública</b> — o navegador do cliente não alcança <code class="text-purple-400">localhost</code>. Sem isso, não há redirect, impressões nem cliques.</p></div></div>
+                <div class="flex items-center gap-6 text-[10px] text-gray-500 mt-4 pt-4 border-t border-white/5"><div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-gray-400 text-sm">lock</span><span>Requer URL pública</span></div><div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-gray-400 text-sm">lock</span><span>Requer write_themes</span></div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="space-y-6">
+            <!-- AutoMatch por SKU -->
+            <div class="dr-stat rounded-3xl p-6 relative overflow-hidden group">
+              <div class="flex items-center gap-4 mb-6"><div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-violet-500/20 to-purple-500/10 flex items-center justify-center border border-violet-500/30 shadow-[0_0_25px_rgba(139,92,246,0.2)]"><span class="material-symbols-outlined text-3xl text-violet-400">link</span></div><div><h3 class="text-xl font-black text-white tracking-tight">AutoMatch por SKU</h3><p class="text-xs text-gray-500">Mapeia automaticamente por sufixo do SKU</p></div></div>
+              <div class="space-y-4">
+                <div class="flex items-center justify-between bg-gradient-to-r from-white/[0.03] to-white/[0.06] rounded-2xl p-4 border border-white/5 hover:border-violet-500/30 transition-all"><div class="flex items-center gap-3 flex-1"><span class="material-symbols-outlined text-lg text-gray-400">format_list_numbered</span><div><p class="text-sm font-bold text-gray-200">Tamanho do Sufixo</p><p class="text-[10px] text-gray-500">Últimos N caracteres do SKU</p></div></div><div class="flex items-center gap-2"><input id="amSuffix" type="number" value="4" min="1" max="50" class="w-20 bg-black/40 border border-white/10 rounded-xl px-3 py-2.5 text-white text-center text-sm font-bold focus:outline-none focus:border-violet-500/50"><span class="text-xs text-gray-500 font-mono">chars</span></div></div>
+                <div class="flex items-center justify-between bg-gradient-to-r from-white/[0.03] to-white/[0.06] rounded-2xl p-4 border border-white/5 hover:border-violet-500/30 transition-all"><div class="flex items-center gap-3 flex-1"><span class="material-symbols-outlined text-lg text-gray-400">compare_arrows</span><div><p class="text-sm font-bold text-gray-200">Estratégia</p><p class="text-[10px] text-gray-500">Como comparar os SKUs</p></div></div><select id="amStrategy" class="bg-black/40 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm font-bold focus:outline-none focus:border-violet-500/50"><option value="suffix">Sufixo (final)</option><option value="prefix">Prefixo (início)</option><option value="exact">Exato</option></select></div>
+                <div class="flex items-center justify-between bg-gradient-to-r from-white/[0.03] to-white/[0.06] rounded-2xl p-4 border border-white/5 hover:border-violet-500/30 transition-all"><div class="flex items-center gap-3 flex-1"><span class="material-symbols-outlined text-lg text-gray-400">toggle_on</span><div><p class="text-sm font-bold text-gray-200">AutoMatch Ativo</p><p class="text-[10px] text-gray-500">Usar mapeamento automático no redirect</p></div></div><label class="relative inline-flex items-center cursor-pointer"><input type="checkbox" id="amEnabled" class="sr-only peer" checked><div class="w-14 h-7 bg-white/5 rounded-full peer peer-checked:after:translate-x-7 after:content-[''] after:absolute after:top-[3px] after:left-[3px] after:bg-gray-500 after:rounded-full after:h-[22px] after:w-[22px] after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-violet-600 peer-checked:to-purple-500 peer-checked:after:bg-white peer-checked:shadow-[0_0_20px_rgba(139,92,246,0.4)] border border-white/10 peer-checked:border-violet-500/30 transition-all"></div></label></div>
+
+                <div class="bg-gradient-to-br from-violet-500/10 to-purple-500/5 rounded-2xl p-5 border border-violet-500/20">
+                  <div class="flex items-center justify-between mb-4"><div class="flex items-center gap-2"><span class="material-symbols-outlined text-violet-400">analytics</span><span class="text-xs text-violet-400 font-black uppercase tracking-wider">Estatísticas AutoMatch</span></div><span class="text-[9px] text-gray-500 font-mono" id="amUpdated">nunca sincronizado</span></div>
+                  <div class="grid grid-cols-2 gap-4"><div class="bg-black/30 rounded-xl p-4 text-center"><p class="text-3xl font-black text-white mb-1" id="amMapped">—</p><p class="text-[10px] text-gray-500 uppercase tracking-wider font-bold">Mapeados</p></div><div class="bg-black/30 rounded-xl p-4 text-center"><p class="text-3xl font-black text-gray-400 mb-1" id="amUnmapped">—</p><p class="text-[10px] text-gray-500 uppercase tracking-wider font-bold">Sem Match</p></div></div>
+                </div>
+
+                <!-- SKU Consolidado -->
+                <div class="bg-gradient-to-br from-cyan-500/10 to-blue-500/5 rounded-2xl p-5 border border-cyan-500/20">
+                  <div class="flex items-center justify-between mb-4"><div class="flex items-center gap-2"><span class="material-symbols-outlined text-cyan-400">hub</span><span class="text-xs text-cyan-400 font-black uppercase tracking-wider">SKU Consolidado</span><span class="px-2 py-0.5 rounded-full bg-cyan-500/20 text-[9px] font-bold text-cyan-300 border border-cyan-500/30">MANY-TO-ONE</span></div><button id="amViewGroups" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 text-[10px] font-bold uppercase tracking-wider hover:bg-cyan-500/20 transition-all"><span class="material-symbols-outlined text-sm">visibility</span>Ver Grupos</button></div>
+                  <p class="text-[11px] text-gray-400 leading-relaxed mb-4">Múltiplos produtos da <strong class="text-blue-400">Vitrine</strong> com o mesmo SKU mapeiam para um <strong class="text-emerald-400">único produto</strong> do Pool.</p>
+                  <div class="bg-black/30 rounded-xl p-4 mb-4"><div class="flex items-center justify-center gap-4">
+                    <div class="flex flex-col items-center gap-1"><div class="flex gap-1"><div class="w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-500/30 flex items-center justify-center"><span class="text-[10px] font-bold text-blue-400">A</span></div><div class="w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-500/30 flex items-center justify-center"><span class="text-[10px] font-bold text-blue-400">B</span></div><div class="w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-500/30 flex items-center justify-center"><span class="text-[10px] font-bold text-blue-400">C</span></div></div><span class="text-[9px] text-gray-500 mt-1">SKU: 123</span><span class="text-[8px] text-blue-400/70">VITRINE</span></div>
+                    <div class="flex flex-col items-center"><svg class="w-8 h-8 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg><span class="text-[8px] text-cyan-400 font-bold">MAPEIA</span></div>
+                    <div class="flex flex-col items-center gap-1"><div class="w-12 h-12 rounded-xl bg-emerald-500/20 border-2 border-emerald-500/50 flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.3)]"><span class="text-lg font-bold text-emerald-400">1</span></div><span class="text-[9px] text-gray-500 mt-1">SKU: 123</span><span class="text-[8px] text-emerald-400/70">POOL</span></div>
+                  </div></div>
+                  <div class="grid grid-cols-3 gap-2"><div class="bg-black/20 rounded-lg p-2 text-center"><p class="text-lg font-black text-white" id="amGroups">—</p><p class="text-[8px] text-gray-500 uppercase">Grupos SKU</p></div><div class="bg-black/20 rounded-lg p-2 text-center"><p class="text-lg font-black text-cyan-400" id="amVitrine">—</p><p class="text-[8px] text-gray-500 uppercase">Vitrine</p></div><div class="bg-black/20 rounded-lg p-2 text-center"><p class="text-lg font-black text-emerald-400" id="amPool">—</p><p class="text-[8px] text-gray-500 uppercase">Pool</p></div></div>
+                  <button id="amSyncBtn" class="w-full mt-4 flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold text-sm uppercase tracking-wider shadow-lg shadow-cyan-900/30 transition-all group/btn"><span class="material-symbols-outlined text-lg group-hover/btn:rotate-180 transition-transform duration-500">sync</span><span>Executar Consolidação SKU</span></button>
+                </div>
+
+                <!-- Relatório de Cobertura -->
+                <div class="bg-gradient-to-br from-purple-500/10 to-pink-500/5 rounded-2xl p-5 border border-purple-500/20">
+                  <div class="flex items-center justify-between mb-4"><div class="flex items-center gap-2"><span class="material-symbols-outlined text-purple-400">analytics</span><span class="text-xs text-purple-400 font-black uppercase tracking-wider">Relatório de Cobertura</span><span class="px-2 py-0.5 rounded-full bg-purple-500/20 text-[9px] font-bold text-purple-300 border border-purple-500/30">MAPEAMENTOS</span></div><button id="amViewDetails" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/30 text-purple-400 text-[10px] font-bold uppercase tracking-wider hover:bg-purple-500/20 transition-all"><span class="material-symbols-outlined text-sm">query_stats</span>Ver Detalhes</button></div>
+                  <div class="mb-4"><div class="flex items-center justify-between mb-2"><span class="text-[11px] text-gray-400">Cobertura Total</span><span class="text-sm font-bold text-white" id="amCovPercent">—</span></div><div class="h-3 bg-black/40 rounded-full overflow-hidden"><div class="h-full bg-gradient-to-r from-emerald-600 to-green-500 rounded-full" id="amCovBar" style="width:0%"></div></div></div>
+                  <div class="grid grid-cols-5 gap-2"><div class="bg-black/20 rounded-lg p-2"><div class="flex items-center gap-1.5 mb-1"><span class="w-2 h-2 rounded-full bg-violet-500"></span><span class="text-[9px] text-violet-400 font-bold uppercase">Manual</span></div><p class="text-lg font-black text-white" id="amCovManual">—</p></div><div class="bg-black/20 rounded-lg p-2"><div class="flex items-center gap-1.5 mb-1"><span class="w-2 h-2 rounded-full bg-emerald-500"></span><span class="text-[9px] text-emerald-400 font-bold uppercase">Exato</span></div><p class="text-lg font-black text-white" id="amCovExact">—</p></div><div class="bg-black/20 rounded-lg p-2"><div class="flex items-center gap-1.5 mb-1"><span class="w-2 h-2 rounded-full bg-amber-500"></span><span class="text-[9px] text-amber-400 font-bold uppercase">Parcial</span></div><p class="text-lg font-black text-white" id="amCovPartial">—</p></div><div class="bg-black/20 rounded-lg p-2"><div class="flex items-center gap-1.5 mb-1"><span class="w-2 h-2 rounded-full bg-cyan-500"></span><span class="text-[9px] text-cyan-400 font-bold uppercase">Consol.</span></div><p class="text-lg font-black text-white" id="amCovConsol">—</p></div><div class="bg-black/20 rounded-lg p-2"><div class="flex items-center gap-1.5 mb-1"><span class="w-2 h-2 rounded-full bg-red-500"></span><span class="text-[9px] text-red-400 font-bold uppercase">Sem Map</span></div><p class="text-lg font-black text-white" id="amCovUnmapped">—</p></div></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Rastreio de Vendas -->
+            <div class="dr-stat rounded-3xl p-6 relative overflow-hidden group">
+              <div class="flex items-center justify-between mb-6"><div class="flex items-center gap-4"><div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500/20 to-blue-500/10 flex items-center justify-center border border-emerald-500/30"><span class="material-symbols-outlined text-2xl text-emerald-400">webhook</span></div><div><h3 class="text-xl font-black text-white tracking-tight">Rastreio de Vendas</h3><p class="text-xs text-gray-500">Leitura direta da Admin API (sem webhook)</p></div></div><div class="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20"><span class="relative flex h-2.5 w-2.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span></span><span class="text-xs font-bold text-emerald-400 uppercase tracking-wider">Ativo</span></div></div>
+              <div class="bg-gradient-to-br from-black/40 to-black/20 rounded-2xl p-5 border border-white/5">
+                <div class="flex items-start gap-3 mb-5 p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/10"><span class="material-symbols-outlined text-emerald-400 mt-0.5">check_circle</span><div><p class="text-sm text-emerald-400 font-bold mb-1">Funciona sem configuração</p><p class="text-xs text-gray-400 leading-relaxed">O painel <strong class="text-white">lê os pedidos direto da Admin API</strong> a cada poucos segundos — é assim que a rotação conta as vendas e o pós-compra detecta pedidos pagos. <strong class="text-white">Não precisa de webhook</strong> (webhook exigiria URL pública).</p></div></div>
+                <div class="flex items-center gap-3 bg-gradient-to-r from-black/60 to-black/40 p-4 rounded-xl border border-blue-500/20"><span class="material-symbols-outlined text-blue-400">link</span><code class="text-sm text-blue-300 font-mono truncate flex-1">GET /admin/api/2025-01/orders.json</code><span class="text-[10px] text-gray-500 whitespace-nowrap">polling a cada 25–60s</span></div>
+                <div class="grid grid-cols-3 gap-3 mt-4"><div class="flex items-center gap-3 bg-white/[0.02] rounded-xl p-3 border border-white/5"><span class="w-2 h-2 rounded-full bg-emerald-500"></span><div><p class="text-[9px] text-gray-500 uppercase tracking-wider">Fonte</p><p class="text-xs text-gray-300 font-bold">Admin API</p></div></div><div class="flex items-center gap-3 bg-white/[0.02] rounded-xl p-3 border border-white/5"><span class="w-2 h-2 rounded-full bg-blue-500"></span><div><p class="text-[9px] text-gray-500 uppercase tracking-wider">Formato</p><p class="text-xs text-gray-300 font-bold">JSON</p></div></div><div class="flex items-center gap-3 bg-white/[0.02] rounded-xl p-3 border border-white/5"><span class="w-2 h-2 rounded-full bg-purple-500"></span><div><p class="text-[9px] text-gray-500 uppercase tracking-wider">Escopo</p><p class="text-xs text-gray-300 font-bold">read_orders</p></div></div></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+      <!-- ===== ANALYTICS (sub-view do Flow) ===== -->
+      <div id="flow-analytics" hidden class="space-y-6 pb-10">
+
+        <!-- Header -->
+        <div class="flex items-center justify-between gap-4 flex-wrap">
+          <div class="flex items-center gap-3">
+            <button onclick="drHideAnalytics()" class="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-gray-400 hover:text-emerald-400 transition-all" title="Voltar"><span class="material-symbols-outlined">arrow_back</span></button>
+            <div><h1 class="text-2xl font-black tracking-tight">Analytics</h1><p class="text-xs text-gray-500" id="an-sub">Centro de Inteligência</p></div>
+          </div>
+          <div class="flex gap-1.5 flex-wrap" id="an-ranges">
+            <button data-anrange="today" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">Hoje</button>
+            <button data-anrange="yesterday" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all border border-white/10 text-gray-400 hover:text-gray-700">Ontem</button>
+            <button data-anrange="7d" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all border border-white/10 text-gray-400 hover:text-gray-700">7 dias</button>
+            <button data-anrange="30d" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all border border-white/10 text-gray-400 hover:text-gray-700">30 dias</button>
+          </div>
+        </div>
+
+        <!-- RESULTADOS DE VENDAS -->
+        <div>
+          <div class="flex items-center gap-2 mb-3"><span class="material-symbols-outlined text-emerald-400 text-lg">trending_up</span><span class="text-xs font-black uppercase tracking-widest text-gray-500">Resultados de Vendas</span></div>
+          <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+            <div class="dr-stat rounded-2xl p-4"><div class="flex items-center gap-2 mb-3"><span class="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center"><span class="material-symbols-outlined text-emerald-400 text-base">check_circle</span></span><span class="text-[10px] font-bold uppercase tracking-wider text-gray-500">Vendas Confirmadas</span></div><div class="text-2xl font-black" id="an-vendas">0</div></div>
+            <div class="dr-stat rounded-2xl p-4"><div class="flex items-center gap-2 mb-3"><span class="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center"><span class="material-symbols-outlined text-blue-400 text-base">payments</span></span><span class="text-[10px] font-bold uppercase tracking-wider text-gray-500">Faturamento Bruto</span></div><div class="text-2xl font-black" id="an-faturamento">R$0</div></div>
+            <div class="dr-stat rounded-2xl p-4"><div class="flex items-center gap-2 mb-3"><span class="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center"><span class="material-symbols-outlined text-cyan-400 text-base">receipt_long</span></span><span class="text-[10px] font-bold uppercase tracking-wider text-gray-500">Ticket Médio</span></div><div class="text-2xl font-black" id="an-ticket">R$0</div></div>
+            <div class="dr-stat rounded-2xl p-4"><div class="flex items-center gap-2 mb-3"><span class="w-8 h-8 rounded-lg bg-violet-500/10 border border-violet-500/20 flex items-center justify-center"><span class="material-symbols-outlined text-violet-400 text-base">sync</span></span><span class="text-[10px] font-bold uppercase tracking-wider text-gray-500">Rotações</span></div><div class="text-2xl font-black" id="an-rotacoes">0</div></div>
+            <div class="dr-stat rounded-2xl p-4"><div class="flex items-center gap-2 mb-3"><span class="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center"><span class="material-symbols-outlined text-amber-400 text-base">barcode</span></span><span class="text-[10px] font-bold uppercase tracking-wider text-gray-500">Boletos</span></div><div class="text-2xl font-black" id="an-boletos">0</div></div>
+          </div>
+        </div>
+
+        <!-- FUNIL DE CONVERSÃO -->
+        <div>
+          <div class="flex items-center gap-2 mb-3"><span class="material-symbols-outlined text-blue-400 text-lg">filter_alt</span><span class="text-xs font-black uppercase tracking-widest text-gray-500">Funil de Conversão</span></div>
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div class="dr-stat rounded-2xl p-4"><div class="flex items-center gap-2 mb-3"><span class="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center"><span class="material-symbols-outlined text-blue-400 text-base">visibility</span></span><span class="text-[10px] font-bold uppercase tracking-wider text-gray-500">Impressões</span></div><div class="text-2xl font-black" id="an-impressoes">0</div></div>
+            <div class="dr-stat rounded-2xl p-4"><div class="flex items-center gap-2 mb-3"><span class="w-8 h-8 rounded-lg bg-orange-500/10 border border-orange-500/20 flex items-center justify-center"><span class="material-symbols-outlined text-orange-400 text-base">ads_click</span></span><span class="text-[10px] font-bold uppercase tracking-wider text-gray-500">Cliques</span></div><div class="text-2xl font-black" id="an-cliques">0</div></div>
+            <div class="dr-stat rounded-2xl p-4"><div class="flex items-center gap-2 mb-3"><span class="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center"><span class="material-symbols-outlined text-cyan-400 text-base">percent</span></span><span class="text-[10px] font-bold uppercase tracking-wider text-gray-500">Taxa de Clique</span></div><div class="text-2xl font-black" id="an-taxaclique">0%</div></div>
+            <div class="dr-stat rounded-2xl p-4"><div class="flex items-center gap-2 mb-3"><span class="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center"><span class="material-symbols-outlined text-emerald-400 text-base">trending_up</span></span><span class="text-[10px] font-bold uppercase tracking-wider text-gray-500">Taxa de Conversão</span></div><div class="text-2xl font-black" id="an-conversao">0%</div></div>
+          </div>
+        </div>
+
+        <!-- PERFORMANCE DE REDIRECIONAMENTO -->
+        <div>
+          <div class="flex items-center gap-2 mb-3"><span class="material-symbols-outlined text-violet-400 text-lg">route</span><span class="text-xs font-black uppercase tracking-widest text-gray-500">Performance de Redirecionamento</span></div>
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div class="dr-stat rounded-2xl p-4"><div class="flex items-center gap-2 mb-3"><span class="w-8 h-8 rounded-lg bg-violet-500/10 border border-violet-500/20 flex items-center justify-center"><span class="material-symbols-outlined text-violet-400 text-base">bolt</span></span><span class="text-[10px] font-bold uppercase tracking-wider text-gray-500">Redirects OK</span></div><div class="text-2xl font-black" id="an-redirok">0</div></div>
+            <div class="dr-stat rounded-2xl p-4"><div class="flex items-center gap-2 mb-3"><span class="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center"><span class="material-symbols-outlined text-emerald-400 text-base">check</span></span><span class="text-[10px] font-bold uppercase tracking-wider text-gray-500">Taxa de Sucesso</span></div><div class="text-2xl font-black" id="an-taxasucesso">100%</div></div>
+            <div class="dr-stat rounded-2xl p-4"><div class="flex items-center gap-2 mb-3"><span class="w-8 h-8 rounded-lg bg-pink-500/10 border border-pink-500/20 flex items-center justify-center"><span class="material-symbols-outlined text-pink-400 text-base">hub</span></span><span class="text-[10px] font-bold uppercase tracking-wider text-gray-500">Pool Redirects</span></div><div class="text-2xl font-black" id="an-poolredir">0</div></div>
+            <div class="dr-stat rounded-2xl p-4"><div class="flex items-center gap-2 mb-3"><span class="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center"><span class="material-symbols-outlined text-emerald-400 text-base">dns</span></span><span class="text-[10px] font-bold uppercase tracking-wider text-gray-500">Pool Status</span></div><div class="text-2xl font-black" id="an-poolstatus">0/0</div></div>
+          </div>
+        </div>
+
+        <!-- MONITORAMENTO DE ESCAPES -->
+        <div>
+          <div class="flex items-center justify-between mb-3"><div class="flex items-center gap-2"><span class="material-symbols-outlined text-emerald-400 text-lg">shield</span><span class="text-xs font-black uppercase tracking-widest text-gray-500">Monitoramento de Escapes</span></div><span class="px-3 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-bold">0 Recaps</span></div>
+          <div class="dr-stat rounded-2xl p-5 flex items-start gap-3 border-emerald-500/20" style="border-color:var(--good-border)"><span class="material-symbols-outlined text-emerald-400">verified_user</span><div><p class="text-sm font-bold text-emerald-400">Nenhum Escape Detectado</p><p class="text-xs text-gray-500 mt-0.5">Todos os checkouts estão sendo direcionados corretamente para o pool.</p></div></div>
+        </div>
+
+        <!-- VISITANTES EM TEMPO REAL -->
+        <div>
+          <div class="flex items-center justify-between mb-3"><div class="flex items-center gap-2"><span class="material-symbols-outlined text-pink-400 text-lg">public</span><span class="text-xs font-black uppercase tracking-widest text-gray-500">Visitantes em Tempo Real</span></div><span class="flex items-center gap-1.5 text-[10px] font-bold text-emerald-400"><span class="relative flex h-2 w-2"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span>AO VIVO</span></div>
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div class="dr-stat rounded-2xl p-5 lg:col-span-2 min-h-[280px] flex flex-col">
+              <h3 class="text-sm font-bold mb-1">Mapa de Visitantes</h3>
+              <p class="text-xs text-gray-500 mb-4">últimos pedidos por região</p>
+              <div class="globe-wrap flex-1" style="min-height:220px"><canvas id="anGlobe"></canvas></div>
+            </div>
+            <div class="dr-stat rounded-2xl p-5">
+              <h3 class="text-sm font-bold mb-4">Estatísticas <span class="text-[10px] font-normal text-gray-500">· últimos 60 min</span></h3>
+              <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="rounded-xl bg-emerald-500/5 border border-emerald-500/15 p-3"><div class="text-xl font-black text-emerald-400" id="an-60orders">0</div><div class="text-[10px] text-gray-500 uppercase tracking-wider">Pedidos 60m</div></div>
+                <div class="rounded-xl bg-orange-500/5 border border-orange-500/15 p-3"><div class="text-xl font-black text-orange-400" id="an-60revenue">R$0</div><div class="text-[10px] text-gray-500 uppercase tracking-wider">Receita 60m</div></div>
+                <div class="rounded-xl bg-cyan-500/5 border border-cyan-500/15 p-3"><div class="text-xl font-black text-cyan-400" id="an-totalviews">0</div><div class="text-[10px] text-gray-500 uppercase tracking-wider">Visualizações</div></div>
+                <div class="rounded-xl bg-violet-500/5 border border-violet-500/15 p-3"><div class="text-xl font-black text-violet-400" id="an-sessions">0</div><div class="text-[10px] text-gray-500 uppercase tracking-wider">Sessões</div></div>
+              </div>
+              <div class="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Top Países</div>
+              <div id="an-paises" class="mb-4"></div>
+              <div class="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Top Cidades</div>
+              <div id="an-cidades"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Vendas por Dia + Checkout Pool -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div class="dr-stat rounded-2xl p-5 lg:col-span-2">
+            <div class="flex items-center gap-2 mb-1"><span class="material-symbols-outlined text-emerald-400 text-lg">show_chart</span><h3 class="text-sm font-bold">Vendas por Dia</h3></div>
+            <p class="text-xs text-gray-500 mb-3">período selecionado</p>
+            <div class="chart-wrap" id="anChartWrap" style="height:240px"><svg id="anChart"></svg></div>
+          </div>
+          <div class="dr-stat rounded-2xl p-5">
+            <div class="flex items-center justify-between mb-3"><div class="flex items-center gap-2"><span class="material-symbols-outlined text-emerald-400 text-lg">hub</span><h3 class="text-sm font-bold">Checkout Pool</h3></div><span class="text-[10px] font-bold text-emerald-400" id="an-poolcount">0 lojas</span></div>
+            <div id="an-pool" class="space-y-3"></div>
+          </div>
+        </div>
+
+        <!-- Timeline de Atividades -->
+        <div class="dr-stat rounded-2xl p-5">
+          <div class="flex items-center gap-2 mb-4"><span class="material-symbols-outlined text-violet-400 text-lg">timeline</span><h3 class="text-sm font-bold">Timeline de Atividades</h3></div>
+          <div id="an-timeline"></div>
+        </div>
+
+      </div>
+    </div>
+  </div><!-- /page-flow -->
+
+  <div id="page-lojas" hidden>
+
+    <!-- ===== VIEW: LISTA DE LOJAS ===== -->
+    <div id="lojasList">
+      <header class="lojas-hero">
+        <div class="lojas-hero-left">
+          <h1 class="lojas-title"><span class="lojas-title-ico">🏪</span> Lojas conectadas</h1>
+          <p class="lojas-sub">Gerencie todas suas operações em um lugar</p>
+        </div>
+        <button class="control btn-primary" id="lojasNewBtn">+ Conectar loja</button>
+      </header>
+
+      <section class="promo-banner">
+        <div class="promo-left">
+          <div class="promo-kicker">✦ Lateralização de catálogo</div>
+          <h2 class="promo-title">Conecte sua loja e clone o catálogo de concorrentes</h2>
+          <p class="promo-desc">Espelhe os produtos de uma loja-modelo, camufle e gere o link de anúncio — direto no painel, sem CLI.</p>
+        </div>
+        <button class="control btn-primary promo-cta" id="promoCta">⚡ Conectar + lateralizar</button>
+      </section>
+
+      <section class="stores-grid" id="storesGrid">
+        <div class="store-card-skeleton">Carregando lojas…</div>
+      </section>
+
+      <section class="card platforms-card">
+        <div class="card-head"><h2>Plataformas suportadas</h2></div>
+        <p class="platforms-sub">Integração automática via API oficial</p>
+        <div class="platform-badges">
+          <span class="plat-badge pb-shopify">🛍 Shopify</span>
+          <span class="plat-badge pb-woo">🟣 WooCommerce</span>
+          <span class="plat-badge pb-cart">🟠 Cartpanda</span>
+          <span class="plat-badge pb-yampi">🔴 Yampi</span>
+          <span class="plat-badge pb-tray">🔵 Tray</span>
+          <span class="plat-badge pb-li">🟢 Loja Integrada</span>
+          <span class="plat-badge pb-shopee">🟠 Shopee</span>
+        </div>
+      </section>
+    </div>
+
+    <!-- ===== VIEW: WIZARD CONECTAR ===== -->
+    <div id="lojasConnect" hidden>
+      <button class="link-back" id="wizBack">← Voltar</button>
+      <h1 class="lojas-title lg">Conectar nova loja</h1>
+      <p class="lojas-sub">Integre via API oficial ou OAuth (Shopify)</p>
+
+      <div class="card wizard-card">
+        <ol class="stepper" id="stepper">
+          <li class="step active" data-step="1"><span class="step-num">1</span><span class="step-label">Plataforma</span></li>
+          <li class="step" data-step="2"><span class="step-num">2</span><span class="step-label">Credenciais</span></li>
+          <li class="step" data-step="3"><span class="step-num">3</span><span class="step-label">Revisar</span></li>
+        </ol>
+
+        <!-- passo 1 -->
+        <div class="wiz-step" data-panel="1">
+          <h3 class="wiz-heading">Escolha a plataforma</h3>
+          <p class="wiz-sub">A integração será automática via API oficial</p>
+          <div class="platform-picker">
+            <button class="platform-opt selected" data-platform="shopify">
+              <span class="po-ico">🛍</span>
+              <span class="po-name">Shopify</span>
+              <span class="po-desc">Custom App ou OAuth</span>
+            </button>
+          </div>
+          <div class="wiz-actions">
+            <span></span>
+            <div>
+              <button class="control btn-ghost" id="wizCancel">Cancelar</button>
+              <button class="control btn-primary" id="wizToStep2">Continuar ›</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- passo 2 -->
+        <div class="wiz-step" data-panel="2" hidden>
+          <div class="wiz-head-row">
+            <span class="wiz-plat-ico">🛍</span>
+            <div>
+              <h3 class="wiz-heading">Conectar Shopify</h3>
+              <p class="wiz-sub">Escolha o modo de conexão. Token criptografado nunca exposto no client.</p>
+            </div>
+          </div>
+
+          <div class="mode-toggle" role="tablist">
+            <button class="mode-opt selected" data-mode="custom">
+              <span class="mode-title">🔑 Custom App <span class="mode-tag tag-fast">Rápido</span></span>
+              <span class="mode-desc">Cole o Admin API Access Token da sua loja. Funciona sem conta Partner. 1 loja por token.</span>
+            </button>
+            <button class="mode-opt" data-mode="oauth">
+              <span class="mode-title">↗ OAuth (Partner App) <span class="mode-tag tag-prod">Produção</span></span>
+              <span class="mode-desc">Fluxo Shopify oficial. Multi-tenant. Requer App criado em partners.shopify.com.</span>
+            </button>
+          </div>
+
+          <!-- form custom app -->
+          <div class="mode-panel" data-mode-panel="custom">
+            <div class="wiz-note">
+              <strong>🔗 Antes de começar — 3 pontos que confundem</strong>
+              <p>Crie o app <strong>dentro do admin da própria loja</strong> (Apps → Develop apps) — funciona em qualquer loja, sem depender de organização.</p>
+              <p><strong>Domínio</strong> = o endereço <code>.myshopify.com</code> da loja (ex.: minhaloja.myshopify.com) — <strong>não</strong> o seu e-mail nem o domínio personalizado.</p>
+              <p>O token é o <strong>Admin API access token</strong> gerado ao instalar o app (API credentials → Install app). <strong>Não</strong> é a API key nem o secret.</p>
+            </div>
+
+            <!-- escopos necessários -->
+            <div class="scopes-box">
+              <div class="scopes-head">
+                <strong>🔑 Escopos do Admin API que você precisa marcar</strong>
+                <button type="button" class="control sm" id="copyScopesBtn">Copiar lista</button>
+              </div>
+              <ul class="scope-list">
+                <li class="scope-req">
+                  <code>read_orders</code>
+                  <span class="scope-tag tag-req">Obrigatório</span>
+                  <span class="scope-why">Vendas, faturamento, ticket e a contagem que faz a rotação pular de loja.</span>
+                </li>
+                <li class="scope-req">
+                  <code>read_products</code>
+                  <span class="scope-tag tag-req">Obrigatório</span>
+                  <span class="scope-why">Contagem de produtos e o AutoMatch por SKU entre vitrine e checkout.</span>
+                </li>
+                <li>
+                  <code>write_orders</code>
+                  <span class="scope-tag tag-opt">Opcional</span>
+                  <span class="scope-why">Só se for usar o <strong>pós-compra digital</strong> (criar o pedido do produto digital automaticamente).</span>
+                </li>
+                <li>
+                  <code>read_themes</code> <code>write_themes</code>
+                  <span class="scope-tag tag-opt">Opcional</span>
+                  <span class="scope-why">Só para injetar o script de rastreamento no tema — <strong>exige o painel publicado numa URL pública</strong> (não funciona rodando local).</span>
+                </li>
+              </ul>
+              <p class="scopes-foot">Marcou os escopos depois de instalar o app? Salve, clique em <strong>Instalar app</strong> de novo e <strong>gere um token novo</strong> — o antigo não ganha as permissões.</p>
+            </div>
+
+            <label class="wiz-field">Domínio da loja
+              <input type="text" id="wizDomain" placeholder="minhaloja.myshopify.com" autocomplete="off">
+              <span class="wiz-hint">O endereço <code>.myshopify.com</code> da loja — não o seu e-mail.</span>
+            </label>
+            <label class="wiz-field">Admin API access token 🔒
+              <input type="password" id="wizToken" placeholder="shpat_…" autocomplete="off">
+              <span class="wiz-hint">Validamos o token em tempo real antes de salvar. Criptografado no servidor.</span>
+            </label>
+            <label class="wiz-field">Nome interno <span class="opt">(opcional)</span>
+              <input type="text" id="wizName" placeholder="Ex.: Loja Magic BR" autocomplete="off">
+            </label>
+            <details class="wiz-details">
+              <summary>▸ Como obter o token (1 minuto)</summary>
+              <ol class="wiz-help-list">
+                <li>No admin da loja: <strong>Configurações → Apps e canais de vendas → Desenvolver apps</strong> (se for a primeira vez, clique em "Permitir desenvolvimento de apps personalizados").</li>
+                <li><strong>Criar um app</strong> → dê um nome qualquer (ex.: "Painel").</li>
+                <li>Em <strong>Configuração → Escopos do Admin API</strong>, marque os escopos da lista acima e <strong>salve</strong>.</li>
+                <li>Vá em <strong>Credenciais da API → Instalar app</strong>.</li>
+                <li>Copie o <strong>token de acesso do Admin API</strong> (começa com <code>shpat_</code> — ele só aparece uma vez!) e cole aqui.</li>
+              </ol>
+            </details>
+            <div class="wiz-status" id="wizStatus"></div>
+          </div>
+
+          <!-- form oauth -->
+          <div class="mode-panel" data-mode-panel="oauth" hidden>
+            <div class="wiz-note note-warn">
+              <strong>⚠ Deu "This app can't be installed on this store"?</strong>
+              <p>O app do Partner está em <strong>distribuição Custom</strong>: o Shopify só deixa instalar em lojas da <strong>mesma organização</strong>. Use o caminho <strong>Custom App</strong> (ao lado): cria um app dentro do admin da própria loja e funciona em qualquer loja, sem review.</p>
+              <button class="control btn-ghost" id="oauthToCustom">Trocar para Custom App →</button>
+            </div>
+
+            <!-- escopos necessários (OAuth) -->
+            <div class="scopes-box">
+              <div class="scopes-head">
+                <strong>🔑 Escopos que o app precisa pedir</strong>
+                <button type="button" class="control sm" id="copyScopesOauthBtn">Copiar lista</button>
+              </div>
+              <p class="scopes-intro">No Partner App você <strong>não marca no admin da loja</strong>: declare os escopos no app (<strong>Partner Dashboard → App setup → Admin API access scopes</strong>, ou <code>scopes</code> no <code>shopify.app.toml</code>). Eles vão no parâmetro <code>scope</code> da URL de autorização e aparecem na tela de permissões que o lojista aceita.</p>
+              <ul class="scope-list">
+                <li class="scope-req">
+                  <code>read_orders</code>
+                  <span class="scope-tag tag-req">Obrigatório</span>
+                  <span class="scope-why">Vendas, faturamento, ticket e a contagem que faz a rotação pular de loja.</span>
+                </li>
+                <li class="scope-req">
+                  <code>read_products</code>
+                  <span class="scope-tag tag-req">Obrigatório</span>
+                  <span class="scope-why">Contagem de produtos e o AutoMatch por SKU entre vitrine e checkout.</span>
+                </li>
+                <li>
+                  <code>write_orders</code>
+                  <span class="scope-tag tag-opt">Opcional</span>
+                  <span class="scope-why">Só se for usar o <strong>pós-compra digital</strong> (criar o pedido do produto digital automaticamente).</span>
+                </li>
+                <li>
+                  <code>read_themes</code> <code>write_themes</code>
+                  <span class="scope-tag tag-opt">Opcional</span>
+                  <span class="scope-why">Só para injetar o script de rastreamento no tema — <strong>exige o painel publicado numa URL pública</strong> (não funciona rodando local).</span>
+                </li>
+              </ul>
+              <p class="scopes-foot">Mudou os escopos com o app já instalado? O lojista precisa <strong>reautorizar</strong> (rode o OAuth de novo) — o access token antigo mantém só as permissões antigas.</p>
+            </div>
+
+            <label class="wiz-field">Domínio da loja
+              <input type="text" id="oauthDomain" placeholder="minhaloja.myshopify.com" autocomplete="off">
+              <span class="wiz-hint">Você será redirecionado para o Shopify para autorizar as permissões.</span>
+            </label>
+            <label class="wiz-field">Client ID <span class="opt">(API key do app)</span>
+              <input type="text" id="oauthClientId" placeholder="ex.: 54c942a788f6b8…" autocomplete="off">
+            </label>
+            <label class="wiz-field">Secret <span class="opt">(client secret do app)</span> 🔒
+              <input type="password" id="oauthSecret" placeholder="shpss_…" autocomplete="off">
+            </label>
+            <div class="wiz-status" id="oauthStatus"></div>
+          </div>
+
+          <div class="wiz-actions">
+            <button class="control btn-ghost" id="wizToStep1">‹ Voltar</button>
+            <button class="control btn-primary" id="wizValidate">⚡ Validar e conectar</button>
+          </div>
+        </div>
+
+        <!-- passo 3 -->
+        <div class="wiz-step" data-panel="3" hidden>
+          <div class="wiz-success" id="wizSuccess">
+            <div class="wiz-success-ico">✓</div>
+            <h3 class="wiz-heading">Loja conectada!</h3>
+            <p class="wiz-sub" id="wizSuccessSub">—</p>
+          </div>
+          <dl class="wiz-review" id="wizReview"></dl>
+          <div class="wiz-actions">
+            <button class="control btn-ghost" id="wizAddAnother">Conectar outra</button>
+            <button class="control btn-primary" id="wizGoDetail">Ver loja ›</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== VIEW: DETALHE DA LOJA ===== -->
+    <div id="lojasDetail" hidden>
+      <button class="link-back" id="detailBack">← Voltar para lojas</button>
+      <header class="detail-hero">
+        <div class="detail-hero-left">
+          <span class="detail-ico">🛍</span>
+          <div>
+            <h1 class="detail-name">
+              <span id="detailName">—</span>
+              <span class="badge badge-ok" id="detailStatus">CONECTADA</span>
+            </h1>
+            <a class="detail-domain" id="detailDomain" target="_blank" rel="noopener">—</a>
+          </div>
+        </div>
+        <div class="detail-actions">
+          <button class="control btn-primary" id="detailCamuflar">🥷 Camuflar</button>
+          <button class="control" id="detailSync">↻ Sincronizar</button>
+          <button class="control btn-danger" id="detailDisconnect">⏻ Desconectar</button>
+        </div>
+      </header>
+
+      <nav class="detail-tabs" id="detailTabs" role="tablist">
+        <button class="dtab active" data-dtab="overview">Visão geral</button>
+        <button class="dtab" data-dtab="produtos">Produtos</button>
+        <button class="dtab" data-dtab="colecoes">Coleções</button>
+        <button class="dtab" data-dtab="tema">Tema</button>
+        <button class="dtab" data-dtab="tracking">Tracking</button>
+        <button class="dtab" data-dtab="pedidos">Pedidos</button>
+        <button class="dtab" data-dtab="cloaker">Cloaker</button>
+        <button class="dtab" data-dtab="webhooks">Webhooks</button>
+        <button class="dtab" data-dtab="config">Configuração</button>
+      </nav>
+
+      <!-- sub-aba: visão geral -->
+      <div class="dpanel" data-dpanel="overview">
+        <section class="tiles detail-tiles">
+          <div class="tile"><div class="tile-head"><span class="tile-icon i-green">$</span><span class="tile-label">Receita 30d</span></div><div class="tile-value sm" id="dRevenue">—</div></div>
+          <div class="tile"><div class="tile-head"><span class="tile-icon i-cyan">▣</span><span class="tile-label">Pedidos 30d</span></div><div class="tile-value sm" id="dOrders">—</div></div>
+          <div class="tile"><div class="tile-head"><span class="tile-icon i-violet">◇</span><span class="tile-label">Ticket médio</span></div><div class="tile-value sm" id="dAov">—</div></div>
+          <div class="tile"><div class="tile-head"><span class="tile-icon i-amber">◎</span><span class="tile-label">Cloaker hits</span></div><div class="tile-value sm" id="dCloaker">0</div></div>
+        </section>
+        <section class="detail-grid">
+          <div class="card chart-card">
+            <div class="card-head"><h2>Receita 30d</h2><span class="card-sub">Evolução diária</span></div>
+            <div class="chart-wrap detail-chart-wrap" id="dChartWrap">
+              <svg id="dChart" role="img" aria-label="Receita da loja nos últimos 30 dias"></svg>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Resumo</h2></div>
+            <dl class="summary-list">
+              <div><dt>Plataforma</dt><dd id="sumPlatform">—</dd></div>
+              <div><dt>Cloaker rules</dt><dd id="sumCloaker">0</dd></div>
+              <div><dt>Produtos</dt><dd id="sumProducts">—</dd></div>
+              <div><dt>Pedidos 30d</dt><dd id="sumOrders">—</dd></div>
+              <div><dt>Conectado em</dt><dd id="sumConnected">—</dd></div>
+            </dl>
+          </div>
+        </section>
+      </div>
+
+      <!-- sub-aba: pedidos -->
+      <div class="dpanel" data-dpanel="pedidos" hidden>
+        <div class="card">
+          <div class="card-head"><h2>Pedidos recentes</h2><span class="card-sub">últimos 30 dias</span></div>
+          <div class="table-scroll">
+            <table class="data-table" id="dOrdersTable">
+              <thead><tr><th>Pedido</th><th>Cidade</th><th class="num">Valor</th><th>Status</th><th class="num">Quando</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- sub-abas placeholder -->
+      <div class="dpanel" data-dpanel="produtos" hidden></div>
+      <div class="dpanel" data-dpanel="colecoes" hidden></div>
+      <div class="dpanel" data-dpanel="tema" hidden></div>
+      <div class="dpanel" data-dpanel="tracking" hidden></div>
+      <div class="dpanel" data-dpanel="cloaker" hidden></div>
+      <div class="dpanel" data-dpanel="webhooks" hidden></div>
+      <div class="dpanel" data-dpanel="config" hidden></div>
+    </div>
+
+  </div><!-- /page-lojas -->
+
+</div><!-- /app -->
+</div><!-- /layout -->
+
+<!-- Modal: gerenciar lojas -->
+<div class="modal-overlay" id="modalOverlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-head">
+      <h2 id="modalTitle">⚡ Gerenciar lojas</h2>
+      <button class="btn-ghost control" id="modalClose" aria-label="Fechar">✕</button>
+    </div>
+
+    <ul class="store-list" id="storeList"></ul>
+
+    <form id="addStoreForm" class="add-form">
+      <h3>Adicionar loja</h3>
+      <label>Nome da loja
+        <input type="text" id="fName" placeholder="Ex.: Loja Principal">
+      </label>
+      <label>Domínio myshopify
+        <input type="text" id="fDomain" placeholder="minhaloja.myshopify.com" required>
+      </label>
+      <label>Token do Admin API
+        <input type="password" id="fToken" placeholder="shpat_..." required autocomplete="off">
+      </label>
+      <p class="hint">
+        Na Shopify: <strong>Configurações → Apps e canais de vendas → Desenvolver apps → Criar app</strong>.
+        Em "Escopos do Admin API" marque <code>read_orders</code> e <code>read_products</code>, instale o app
+        e copie o token de acesso (começa com <code>shpat_</code>). O token fica salvo apenas neste computador.
+      </p>
+      <div class="form-actions">
+        <button type="button" class="control btn-ghost" id="testBtn">Testar conexão</button>
+        <button type="submit" class="control btn-primary">Adicionar loja</button>
+      </div>
+      <div class="form-status" id="formStatus"></div>
+    </form>
+  </div>
+</div>
+
+<!-- Modal genérico (mapeamento / grupos / cobertura) -->
+<div class="modal-overlay" id="drModal" hidden>
+  <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="drModalTitle">
+    <div class="modal-head">
+      <h2 id="drModalTitle">—</h2>
+      <button class="btn-ghost control" onclick="drModalClose()" aria-label="Fechar">✕</button>
+    </div>
+    <div id="drModalBody"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Entrar — Painel Contingência</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  .login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 20px; position: relative; z-index: 1; }
+  .login-card {
+    background: var(--surface-solid); border: 1px solid var(--border); border-radius: 18px;
+    box-shadow: var(--shadow-pop); padding: 30px 32px; width: min(380px, 100%);
+  }
+  .login-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 22px; }
+  .login-brand .brand-mark { width: 40px; height: 40px; border-radius: 12px; font-size: 19px; }
+  .login-title { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+  .login-sub { font-size: 12px; color: var(--text-muted); }
+  .login-card label { display: block; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
+  .login-card input {
+    width: 100%; font: inherit; background: #f8fafc; color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px;
+  }
+  .login-card input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(42,120,214,0.14); background: #fff; }
+  .login-btn { width: 100%; margin-top: 16px; padding: 11px; font-size: 14px; }
+  .login-err { color: var(--bad); font-size: 12.5px; margin-top: 12px; min-height: 18px; }
+  .login-foot { font-size: 11px; color: var(--text-muted); margin-top: 18px; text-align: center; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="bg-fx" aria-hidden="true"></div>
+<div class="login-wrap">
+  <form class="login-card" id="loginForm">
+    <div class="login-brand">
+      <div class="brand-mark">C</div>
+      <div>
+        <div class="login-title">Painel Contingência</div>
+        <div class="login-sub">Acesso restrito</div>
+      </div>
+    </div>
+    <label for="password">Senha do painel</label>
+    <input type="password" id="password" autocomplete="current-password" autofocus required>
+    <button type="submit" class="control btn-primary login-btn" id="loginBtn">Entrar</button>
+    <div class="login-err" id="loginErr"></div>
+    <p class="login-foot">A senha é a variável <code>PANEL_PASSWORD</code> definida no servidor.</p>
+  </form>
+</div>
+<script>
+  const form = document.getElementById('loginForm');
+  const err = document.getElementById('loginErr');
+  const btn = document.getElementById('loginBtn');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    err.textContent = '';
+    btn.disabled = true;
+    btn.textContent = 'Entrando…';
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: document.getElementById('password').value }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Falha ao entrar.');
+      window.location.href = '/';
+    } catch (e) {
+      err.textContent = e.message;
+      btn.disabled = false;
+      btn.textContent = 'Entrar';
+      document.getElementById('password').select();
+    }
+  });
+</script>
+</body>
+</html>
