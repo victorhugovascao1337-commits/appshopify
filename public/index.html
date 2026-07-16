@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Painel Contingência — Shopify</title>
+<script>try{var t=localStorage.getItem('tema');if(!t)t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';if(t==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}</script>
 <link rel="stylesheet" href="styles.css">
 <!-- deps da aba Flow (DarkRouter). preflight off p/ não afetar o tema claro do resto -->
 <script src="https://cdn.tailwindcss.com"></script>
@@ -31,6 +32,7 @@
     <button class="tab-btn" data-tab="flow" role="tab"><span class="tb-ico">🔀</span><span>Flow</span></button>
   </nav>
   <div class="side-bottom">
+    <button class="theme-toggle" id="themeToggle" aria-label="Alternar tema claro/escuro"><span class="tt-ico">🌙</span><span class="tt-label">Modo escuro</span></button>
     <button class="control btn-primary" id="manageBtn">⚡ Gerenciar lojas</button>
   </div>
 </aside>

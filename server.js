@@ -80,6 +80,9 @@ app.use((req, res, next) => {
    */
   if (LOGIN_PATHS.has(req.path) || req.path.startsWith('/api/cron/') ||
       req.path === '/api/oauth/callback' || req.path === '/redirect.js' || req.path === '/api/resolve') return next();
+  // arquivos estáticos (css/js/fontes/imagens) são públicos: a própria tela de login
+  // precisa deles e não contêm segredo — as APIs continuam exigindo o cookie.
+  if (/\.(css|js|mjs|woff2?|ttf|otf|png|jpe?g|svg|gif|ico|webp|map)$/i.test(req.path)) return next();
   if (validToken(readCookie(req, COOKIE))) return next();
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Não autenticado.' });
   return res.redirect('/login');

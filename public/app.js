@@ -2470,3 +2470,27 @@ $('detailDisconnect').addEventListener('click', async () => {
   lojasShow('list');
   loadLojas();
 });
+
+/* ---------- tema claro/escuro ---------- */
+function applyTheme(theme) {
+  const dark = theme === 'dark';
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  const t = $('themeToggle');
+  if (t) {
+    t.querySelector('.tt-ico').textContent = dark ? '☀️' : '🌙';
+    t.querySelector('.tt-label').textContent = dark ? 'Modo claro' : 'Modo escuro';
+  }
+}
+(function initTheme() {
+  let t = null;
+  try { t = localStorage.getItem('tema'); } catch (e) { /* sem storage */ }
+  if (!t) t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  applyTheme(t);
+})();
+if ($('themeToggle')) {
+  $('themeToggle').addEventListener('click', () => {
+    const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('tema', next); } catch (e) { /* sem storage */ }
+    applyTheme(next);
+  });
+}

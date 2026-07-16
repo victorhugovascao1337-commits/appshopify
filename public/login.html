@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Entrar — Painel Contingência</title>
+<script>try{var t=localStorage.getItem('tema');if(!t)t=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';if(t==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}</script>
 <link rel="stylesheet" href="styles.css">
 <style>
   .login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 20px; position: relative; z-index: 1; }
@@ -21,6 +22,8 @@
     border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px;
   }
   .login-card input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(42,120,214,0.14); background: #fff; }
+  html[data-theme="dark"] .login-card input { background: #0e1728; }
+  html[data-theme="dark"] .login-card input:focus { background: #0e1728; }
   .login-btn { width: 100%; margin-top: 16px; padding: 11px; font-size: 14px; }
   .login-err { color: var(--bad); font-size: 12.5px; margin-top: 12px; min-height: 18px; }
   .login-foot { font-size: 11px; color: var(--text-muted); margin-top: 18px; text-align: center; line-height: 1.5; }
