@@ -456,7 +456,11 @@ app.post('/api/stores', async (req, res) => {
   const problema = diagnoseToken(token);
   if (problema) return res.status(400).json({ error: problema });
   const stores = await loadStores();
-  if (stores.some((s) => s.domain === domain)) return res.status(409).json({ error: 'Essa loja já foi adicionada.' });
+  const existente = stores.find((s) => s.domain === domain);
+  const reconnect = !!req.body.reconnect;
+  if (existente && !reconnect) {
+    return res.status(409).json({ error: 'Essa loja já está conectada. Para trocar o token dela (ex.: novo Custom App), reconecte por cima.', canReconnect: true, storeId: existente.id });
+  }
   let currency = 'BRL';
   try {
     const { data } = await shopifyFetch({ domain, token }, 'shop.json');
@@ -464,6 +468,19 @@ app.post('/api/stores', async (req, res) => {
   } catch (e) {
     return res.status(400).json({ error: explainShopifyError(e, domain) });
   }
+
+  // reconexão: troca o token da loja existente, preservando id, pool, mapeamentos e token Storefront
+  if (existente) {
+    existente.token = token;
+    existente.currency = currency;
+    existente.auth = 'custom';
+    if (req.body.name) existente.name = name;
+    existente.reconnectedAt = new Date().toISOString();
+    await saveStores(stores);
+    cache.clear();
+    return res.json({ ok: true, store: publicStore(existente), reconnected: true });
+  }
+
   const store = {
     id: crypto.randomUUID(),
     name,
@@ -472,6 +489,7 @@ app.post('/api/stores', async (req, res) => {
     currency,
     platform: 'shopify',
     connectedAt: new Date().toISOString(),
+    auth: 'custom',
   };
   stores.push(store);
   await saveStores(stores);

@@ -2140,23 +2140,35 @@ $('wizValidate').addEventListener('click', async () => {
   const token = $('wizToken').value.trim();
   const name = $('wizName').value.trim();
   if (!domain || !token) { setWizStatus('wizStatus', '✗ Informe o domínio e o token.', 'err'); return; }
-  setWizStatus('wizStatus', 'Validando token na Shopify…', 'loading');
+  await wizConnectCustom({ name, domain, token });
+});
+
+async function wizConnectCustom(body, reconnect) {
+  setWizStatus('wizStatus', reconnect ? 'Trocando o token da loja…' : 'Validando token na Shopify…', 'loading');
   try {
     const res = await fetch('/api/stores', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, domain, token }),
+      body: JSON.stringify({ ...body, reconnect: !!reconnect }),
     });
     const data = await res.json();
+    // loja já existe → oferece reconectar (trocar o token) sem perder pool/mapeamentos
+    if (res.status === 409 && data.canReconnect && !reconnect) {
+      setWizStatus('wizStatus', '', '');
+      if (confirm('Essa loja já está conectada. Quer trocar o token dela pelo novo? (mantém pool do Flow e mapeamentos)')) {
+        return wizConnectCustom(body, true);
+      }
+      return;
+    }
     if (!res.ok) throw new Error(data.error || 'Falha ao conectar.');
     lojas.lastConnected = data.store;
-    setWizStatus('wizStatus', '', '');
+    setWizStatus('wizStatus', data.reconnected ? '✓ Token atualizado.' : '', data.reconnected ? 'ok' : '');
     showWizardSuccess(data.store);
     loadStores();
   } catch (e) {
     setWizStatus('wizStatus', `✗ ${e.message}`, 'err');
   }
-});
+}
 
 function showWizardSuccess(store) {
   gotoStep(3);
