@@ -1702,7 +1702,8 @@ app.post('/api/oauth/start', async (req, res) => {
     if (!isValidShopDomain(shop)) {
       return res.status(400).json({ error: 'Informe o domínio .myshopify.com da loja (ex.: minhaloja.myshopify.com).' });
     }
-    if ((await loadStores()).some((s) => s.domain === shop)) {
+    const reconnect = !!(req.body || {}).reconnect;
+    if (!reconnect && (await loadStores()).some((s) => s.domain === shop)) {
       return res.status(409).json({ error: 'Essa loja já está conectada no painel.' });
     }
 
@@ -1774,7 +1775,24 @@ app.get('/api/oauth/callback', async (req, res) => {
     } catch { /* segue com o padrão */ }
 
     const stores = await loadStores();
-    if (stores.some((s) => s.domain === shop)) return falha('Essa loja já está conectada no painel.');
+
+    // reconexão: loja já existe → atualiza token/escopos preservando id, pool e mapeamentos
+    const existente = stores.find((s) => s.domain === shop);
+    if (existente) {
+      existente.token = token;
+      existente.currency = currency;
+      existente.auth = 'oauth';
+      existente.scopes = scope || OAUTH_SCOPES;
+      existente.reconnectedAt = new Date().toISOString();
+      await saveStores(stores);
+      // descarta o Storefront token antigo para re-emitir com o novo grant
+      try {
+        const all = await loadSfTokens();
+        if (all[existente.id]) { delete all[existente.id]; await db.writeDoc('storefront_tokens', all); }
+      } catch { /* não impede a reconexão */ }
+      cache.clear();
+      return res.redirect(`/?reconectada=${encodeURIComponent(existente.name)}`);
+    }
 
     const store = {
       id: crypto.randomUUID(),

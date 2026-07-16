@@ -1261,6 +1261,23 @@ async function scLoad() {
   try { scRender(await api('/api/script/status')); } catch { /* painel fica como está */ }
 }
 
+// reconecta a loja de checkout via OAuth para aplicar os escopos Storefront (reaproveita Client ID/Secret salvos)
+async function scReconnect(domain) {
+  try {
+    const res = await fetch('/api/oauth/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain, reconnect: true }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Falha ao iniciar a reconexão.');
+    showLojaToast('Redirecionando…', 'Aceite as permissões na Shopify para liberar o checkout direto.');
+    window.location.href = data.url;
+  } catch (e) {
+    showLojaToast('✗ Não deu para reconectar', e.message + ' — use o assistente em Lojas → Conectar (OAuth).');
+  }
+}
+
 // mostra se a loja de checkout ativa já consegue montar o carrinho (Storefront pronta)
 async function scRenderCheckout(cfg) {
   const el = $('scCheckoutStatus');
@@ -1273,7 +1290,10 @@ async function scRenderCheckout(cfg) {
     if (r.ready) {
       el.innerHTML = `<span class="text-emerald-400">✓ Storefront pronta</span> <span class="text-gray-600">— ${esc(r.store ? r.store.name : '')} monta o carrinho e vai direto ao pagamento.</span>`;
     } else {
-      el.innerHTML = `<span class="text-amber-400">Storefront ainda não liberada</span> <span class="text-gray-600">— ${esc((r.reason || 'reconecte a loja com os escopos unauthenticated_*').slice(0, 120))}. Enquanto isso, cai na página do produto.</span>`;
+      const dom = r.store && r.store.domain;
+      el.innerHTML = `<span class="text-amber-400">Storefront ainda não liberada</span> <span class="text-gray-600">— ${esc(r.reason || 'reconecte a loja com os escopos unauthenticated_*')}</span>`
+        + (dom ? ` <button id="scReconnectBtn" class="ml-1 px-2 py-0.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[10px] font-bold hover:bg-emerald-500/20 transition-all">Reconectar ${esc(r.store.name || 'loja')} via OAuth</button>` : '');
+      if (dom) { const b = $('scReconnectBtn'); if (b) b.addEventListener('click', () => scReconnect(dom)); }
     }
   } catch (e) {
     el.innerHTML = `<span class="text-gray-600">${esc(e.message.slice(0, 80))}</span>`;
@@ -2003,6 +2023,13 @@ function setWizardMode(mode) {
     setTimeout(() => {
       showLojaToast('✓ Loja conectada por OAuth', `${conectada} entrou no painel.`);
       document.querySelector('.tab-btn[data-tab="lojas"]').click();
+    }, 400);
+  }
+  const reconectada = q.get('reconectada');
+  if (reconectada) {
+    history.replaceState({}, '', location.pathname);
+    setTimeout(() => {
+      showLojaToast('✓ Loja reconectada', `${reconectada} aplicou os novos escopos. Já pode usar o checkout direto.`);
     }, 400);
   }
 }

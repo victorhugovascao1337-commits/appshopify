@@ -498,7 +498,7 @@
                       <p class="text-[11px] text-gray-400 leading-relaxed">Só é preciso para o <strong>Checkout direto</strong> (carrinho pronto). É lá que o painel monta o carrinho e gera o link de pagamento. <strong>Você NÃO instala o app “Headless”</strong> — o próprio app que já conecta a loja gera o token sozinho; basta liberar os escopos Storefront na <strong>loja de checkout</strong>:</p>
                       <ul class="mt-2 space-y-1 text-[11px] text-gray-400 leading-relaxed list-disc pl-4">
                         <li><strong>Custom App:</strong> admin da loja de checkout → Apps → seu app → <strong>Configuração</strong> → em <strong>Storefront API</strong>, marque os escopos <code class="text-emerald-300">unauthenticated_*</code>, salve e clique em <strong>Instalar/Atualizar</strong> o app.</li>
-                        <li><strong>Partner App (OAuth):</strong> só <strong>reconectar</strong> a loja de checkout pelo painel — os escopos novos já entram no fluxo.</li>
+                        <li><strong>Partner App (OAuth) — provável seu caso:</strong> não existe a tela “Storefront API” do Custom App. Basta <strong>reconectar</strong> a loja de checkout: clique em <strong>“Reconectar … via OAuth”</strong> no aviso “Destino do cliente” abaixo (ou refaça em <strong>Lojas → Conectar → OAuth</strong>) e aceite as permissões. Os escopos novos já vão no pedido.</li>
                       </ul>
                       <p class="text-[11px] text-gray-500 leading-relaxed mt-2">Enquanto não liberar, o cliente cai na <strong>página do produto</strong> da loja de checkout — nada quebra. O aviso “Destino do cliente” abaixo mostra se já está liberada.</p>
                     </div>
