@@ -1058,6 +1058,18 @@ textarea.panel-input { resize: vertical; }
 .summary-list dt { font-size: 13px; color: var(--text-secondary); }
 .summary-list dd { font-size: 13px; font-weight: 650; text-align: right; }
 
+/* aba Produtos */
+.prod-cell { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.prod-img {
+  width: 40px; height: 40px; border-radius: 9px; flex-shrink: 0; object-fit: cover;
+  border: 1px solid var(--border); background: #f8fafc;
+}
+.prod-img-empty { display: grid; place-items: center; font-size: 16px; }
+.prod-info { min-width: 0; }
+.prod-title { font-weight: 650; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 340px; }
+.prod-vendor { font-size: 11px; color: var(--text-muted); }
+.prod-table td { vertical-align: middle; }
+
 .placeholder-empty {
   text-align: center; color: var(--text-muted); font-size: 13px;
   border: 1px dashed var(--border); border-radius: 16px; padding: 48px 20px;

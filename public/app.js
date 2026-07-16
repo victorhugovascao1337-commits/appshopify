@@ -2049,7 +2049,6 @@ function renderDetailOrders(orders) {
 }
 
 const DPANEL_PLACEHOLDER = {
-  produtos: ['📦', 'Produtos', 'Sincronize e gerencie o catálogo da loja aqui. Integração de produtos em breve.'],
   colecoes: ['🗂', 'Coleções', 'Organize coleções e categorias espelhadas. Em breve nesta build.'],
   tema: ['🎨', 'Tema', 'Personalize e clone o tema da loja-modelo. Em breve.'],
   tracking: ['📊', 'Tracking', 'Pixels, UTMs e eventos de conversão. Configuração de tracking em breve.'],
@@ -2058,10 +2057,56 @@ const DPANEL_PLACEHOLDER = {
   config: ['⚙️', 'Configuração', 'Ajustes de moeda, sincronização e credenciais da loja. Em breve.'],
 };
 
+/* ---------- aba Produtos (catálogo real da loja) ---------- */
+
+const PROD_STATUS = { active: ['Ativo', 'st-paid'], draft: ['Rascunho', 'st-pending'], archived: ['Arquivado', 'st-other'] };
+
+async function loadStoreProducts(storeId) {
+  const panel = document.querySelector('#lojasDetail .dpanel[data-dpanel="produtos"]');
+  if (!panel) return;
+  panel.innerHTML = '<div class="placeholder-empty"><span class="pe-ico">📦</span><div class="pe-title">Carregando catálogo…</div><div>Buscando os produtos na Shopify.</div></div>';
+  try {
+    const { products, count } = await api(`/api/stores/${storeId}/products`);
+    if (!count) {
+      panel.innerHTML = '<div class="placeholder-empty"><span class="pe-ico">📦</span><div class="pe-title">Nenhum produto</div><div>Esta loja ainda não tem produtos cadastrados.</div></div>';
+      return;
+    }
+    const ativos = products.filter((p) => p.status === 'active').length;
+    const semSku = products.filter((p) => !p.sku).length;
+    panel.innerHTML = `<div class="card">
+      <div class="card-head">
+        <h2>Catálogo</h2>
+        <span class="card-sub">${fmtInt(count)} produto${count > 1 ? 's' : ''} · ${fmtInt(ativos)} ativo${ativos === 1 ? '' : 's'}${semSku ? ` · <strong style="color:var(--warn)">${fmtInt(semSku)} sem SKU</strong>` : ''}</span>
+      </div>
+      ${semSku ? '<p class="hint">Produtos sem SKU não são mapeados pelo AutoMatch — você pode ligá-los à mão pelo Flow, em "Ver mapeamento".</p>' : ''}
+      <div class="table-scroll">
+        <table class="data-table prod-table">
+          <thead><tr><th>Produto</th><th>SKU</th><th class="num">Variantes</th><th class="num">Preço</th><th class="num">Estoque</th><th>Status</th></tr></thead>
+          <tbody>${products.map((p) => {
+            const [lbl, cls] = PROD_STATUS[p.status] || [p.status || '—', 'st-other'];
+            const preco = p.priceMin === p.priceMax ? fmtMoney(p.priceMin) : `${fmtMoney(p.priceMin)} – ${fmtMoney(p.priceMax)}`;
+            return `<tr>
+              <td><div class="prod-cell">${p.image ? `<img class="prod-img" src="${esc(p.image)}" alt="" loading="lazy">` : '<span class="prod-img prod-img-empty">📦</span>'}<div class="prod-info"><div class="prod-title">${esc(p.title)}</div>${p.vendor ? `<div class="prod-vendor">${esc(p.vendor)}</div>` : ''}</div></div></td>
+              <td class="mono">${p.sku ? esc(p.sku) : '<span style="color:var(--warn)">sem SKU</span>'}</td>
+              <td class="num">${fmtInt(p.variants)}</td>
+              <td class="num">${preco}</td>
+              <td class="num">${p.tracked ? fmtInt(p.inventory) : '—'}</td>
+              <td><span class="status-badge ${cls}">${lbl}</span></td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>
+    </div>`;
+  } catch (e) {
+    panel.innerHTML = `<div class="placeholder-empty"><span class="pe-ico">⚠️</span><div class="pe-title">Não deu para carregar</div><div>${esc(e.message)}</div></div>`;
+  }
+}
+
 function setDetailTab(tab) {
   lojas.detailTab = tab;
   document.querySelectorAll('#detailTabs .dtab').forEach((b) => b.classList.toggle('active', b.dataset.dtab === tab));
   document.querySelectorAll('#lojasDetail .dpanel').forEach((p) => { p.hidden = p.dataset.dpanel !== tab; });
+  if (tab === 'produtos' && lojas.detailId) loadStoreProducts(lojas.detailId);
   const ph = DPANEL_PLACEHOLDER[tab];
   if (ph) {
     const panel = document.querySelector(`#lojasDetail .dpanel[data-dpanel="${tab}"]`);

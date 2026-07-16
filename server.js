@@ -505,6 +505,49 @@ async function buildStoresOverview() {
   );
 }
 
+// catálogo real da loja (aba Produtos)
+async function fetchProducts(store) {
+  let endpoint = 'products.json?limit=250&fields=id,title,handle,status,product_type,vendor,image,variants';
+  const out = [];
+  for (let page = 0; page < MAX_PAGES_PER_STORE; page++) {
+    const { data, nextUrl } = await shopifyFetch(store, endpoint);
+    for (const p of data.products || []) {
+      const variants = p.variants || [];
+      const prices = variants.map((v) => parseFloat(v.price) || 0);
+      out.push({
+        id: p.id,
+        title: p.title,
+        handle: p.handle,
+        status: p.status, // active | draft | archived
+        type: p.product_type || '',
+        vendor: p.vendor || '',
+        image: p.image ? p.image.src : null,
+        variants: variants.length,
+        sku: variants[0] ? variants[0].sku || '' : '',
+        priceMin: prices.length ? Math.min(...prices) : 0,
+        priceMax: prices.length ? Math.max(...prices) : 0,
+        // inventory_quantity vem null quando a loja não rastreia estoque
+        inventory: variants.reduce((s, v) => s + (v.inventory_quantity ?? 0), 0),
+        tracked: variants.some((v) => v.inventory_management),
+      });
+    }
+    if (!nextUrl) break;
+    endpoint = nextUrl;
+  }
+  return out;
+}
+
+app.get('/api/stores/:id/products', async (req, res) => {
+  try {
+    const store = (await loadStores()).find((s) => s.id === req.params.id);
+    if (!store) return res.status(404).json({ error: 'Loja não encontrada.' });
+    const products = await cached(`products:${store.id}`, 60000, () => fetchProducts(store));
+    res.json({ store: publicStore(store), count: products.length, products });
+  } catch (e) {
+    res.status(500).json({ error: explainShopifyError(e, req.params.id) });
+  }
+});
+
 app.get('/api/stores/overview', async (req, res) => {
   try {
     const stores = await cached('stores-overview', 60000, buildStoresOverview);
