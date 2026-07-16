@@ -455,12 +455,56 @@
               </div>
             </div>
 
-            <!-- Script -->
+            <!-- Redirect da vitrine (ScriptTag) -->
             <div class="dr-stat rounded-3xl overflow-hidden relative group">
-              <div class="p-5 border-b border-white/5 flex items-center justify-between"><div class="flex items-center gap-4"><div class="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/20 to-violet-500/10 flex items-center justify-center border border-purple-500/30"><span class="material-symbols-outlined text-xl text-purple-400">magic_button</span></div><div><h3 class="text-lg font-bold text-white">Script de Rastreamento</h3><p class="text-[10px] text-gray-500"><span class="text-amber-400">Indisponível</span> <span class="text-gray-600">— requer painel em URL pública</span></p></div></div><button onclick="drIllustrative()" class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-400 font-bold text-xs uppercase tracking-wider hover:bg-purple-500/20 transition-all"><span class="material-symbols-outlined text-sm">sync</span><span>Sincronizar</span></button></div>
-              <div class="p-5 bg-white/[0.02]">
-                <div class="flex items-start gap-4"><div class="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 flex-shrink-0"><span class="material-symbols-outlined text-emerald-400">auto_awesome</span></div><div class="flex-1"><h4 class="text-sm font-bold text-white mb-1">Injeção Automática</h4><p class="text-[11px] text-gray-500 leading-relaxed">Injetaria o script no <code class="text-purple-400">theme.liquid</code> da vitrine (precisa do escopo <code class="text-purple-400">write_themes</code>). <b class="text-amber-400">Só funciona com o painel publicado numa URL pública</b> — o navegador do cliente não alcança <code class="text-purple-400">localhost</code>. Sem isso, não há redirect, impressões nem cliques.</p></div></div>
-                <div class="flex items-center gap-6 text-[10px] text-gray-500 mt-4 pt-4 border-t border-white/5"><div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-gray-400 text-sm">lock</span><span>Requer URL pública</span></div><div class="flex items-center gap-1.5"><span class="material-symbols-outlined text-gray-400 text-sm">lock</span><span>Requer write_themes</span></div></div>
+              <div class="p-5 border-b border-white/5 flex items-center justify-between">
+                <div class="flex items-center gap-4">
+                  <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/20 to-violet-500/10 flex items-center justify-center border border-purple-500/30"><span class="material-symbols-outlined text-xl text-purple-400">bolt</span></div>
+                  <div>
+                    <h3 class="text-lg font-bold text-white">Redirect da vitrine</h3>
+                    <p class="text-[10px] text-gray-500" id="scStatusText">verificando…</p>
+                  </div>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer" title="Liga/desliga o redirect">
+                  <input type="checkbox" id="scEnabled" class="sr-only peer">
+                  <div class="w-14 h-7 bg-white/5 rounded-full peer peer-checked:after:translate-x-7 after:content-[''] after:absolute after:top-[3px] after:left-[3px] after:bg-gray-500 after:rounded-full after:h-[22px] after:w-[22px] after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-purple-600 peer-checked:to-violet-500 peer-checked:after:bg-white border border-white/10 peer-checked:border-purple-500/30 transition-all"></div>
+                </label>
+              </div>
+              <div class="p-5 bg-white/[0.02] space-y-4">
+                <p class="text-[11px] text-gray-500 leading-relaxed">Quem abrir um produto da <strong id="scVitrine">vitrine</strong> é levado para o produto que você escolheu na <strong>loja de checkout ativa</strong> do Flow. Os pares ficam em <strong>Lojas → (loja de checkout) → Mapeamento</strong>.</p>
+
+                <div class="flex items-center justify-between bg-white/[0.03] rounded-2xl p-4 border border-white/5">
+                  <div><p class="text-sm font-bold text-gray-200">Quando redirecionar</p><p class="text-[10px] text-gray-500">Escolha quem é levado para a loja de checkout</p></div>
+                  <select id="scMode" class="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white text-xs font-bold focus:outline-none focus:border-purple-500/50">
+                    <option value="ads">Só tráfego de anúncio</option>
+                    <option value="always">Todo mundo</option>
+                  </select>
+                </div>
+
+                <div class="flex items-center justify-between bg-white/[0.03] rounded-2xl p-4 border border-white/5">
+                  <div><p class="text-sm font-bold text-gray-200">Levar utm/fbclid junto</p><p class="text-[10px] text-gray-500">Mantém o rastreio do anúncio na loja de destino</p></div>
+                  <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="scKeep" class="sr-only peer" checked>
+                    <div class="w-14 h-7 bg-white/5 rounded-full peer peer-checked:after:translate-x-7 after:content-[''] after:absolute after:top-[3px] after:left-[3px] after:bg-gray-500 after:rounded-full after:h-[22px] after:w-[22px] after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-emerald-600 peer-checked:to-green-500 peer-checked:after:bg-white border border-white/10 peer-checked:border-emerald-500/30 transition-all"></div>
+                  </label>
+                </div>
+
+                <div id="scInstallBox" class="rounded-2xl p-4 border border-white/10 bg-black/25">
+                  <div class="flex items-center justify-between gap-3 flex-wrap">
+                    <div><p class="text-sm font-bold" id="scInstallTitle">—</p><p class="text-[10px] text-gray-500" id="scInstallDesc">—</p></div>
+                    <div class="flex gap-2">
+                      <button id="scInstallBtn" class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-purple-500/10 border border-purple-500/30 text-purple-400 font-bold text-xs uppercase tracking-wider hover:bg-purple-500/20 transition-all"><span class="material-symbols-outlined text-sm">download</span><span>Instalar na vitrine</span></button>
+                      <button id="scRemoveBtn" class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 font-bold text-xs uppercase tracking-wider hover:bg-rose-500/20 transition-all" hidden><span class="material-symbols-outlined text-sm">delete</span><span>Remover</span></button>
+                    </div>
+                  </div>
+                  <div class="redirect-box" style="margin-top:10px"><code id="scSrc">—</code></div>
+                </div>
+
+                <div class="flex items-center gap-2 flex-wrap text-[10px] text-gray-500 pt-3 border-t border-white/5">
+                  <span class="material-symbols-outlined text-emerald-400 text-sm">check_circle</span><span>Não mexe no seu tema (usa ScriptTag)</span>
+                  <span class="material-symbols-outlined text-emerald-400 text-sm ml-3">check_circle</span><span>Respeita a rotação e a pausa do Flow</span>
+                  <span class="material-symbols-outlined text-emerald-400 text-sm ml-3">check_circle</span><span>Teste sem redirecionar: <code class="text-purple-400">?noredirect=1</code></span>
+                </div>
               </div>
             </div>
           </div>
@@ -739,20 +783,35 @@
                 <li class="scope-req">
                   <code>read_products</code>
                   <span class="scope-tag tag-req">Obrigatório</span>
-                  <span class="scope-why">Contagem de produtos e o AutoMatch por SKU entre vitrine e checkout.</span>
+                  <span class="scope-why">Catálogo, AutoMatch por SKU e o mapeamento vitrine → checkout.</span>
+                </li>
+                <li>
+                  <code>write_script_tags</code> <code>read_script_tags</code>
+                  <span class="scope-tag tag-opt">Opcional</span>
+                  <span class="scope-why">Instalar e remover o <strong>script de redirect</strong> na vitrine, direto pelo painel — sem mexer no tema.</span>
                 </li>
                 <li>
                   <code>write_orders</code>
                   <span class="scope-tag tag-opt">Opcional</span>
-                  <span class="scope-why">Só se for usar o <strong>pós-compra digital</strong> (criar o pedido do produto digital automaticamente).</span>
+                  <span class="scope-why">Criar o pedido do <strong>pós-compra digital</strong> automaticamente.</span>
                 </li>
                 <li>
                   <code>read_themes</code> <code>write_themes</code>
                   <span class="scope-tag tag-opt">Opcional</span>
-                  <span class="scope-why">Só para injetar o script de rastreamento no tema — <strong>exige o painel publicado numa URL pública</strong> (não funciona rodando local).</span>
+                  <span class="scope-why">Alternativa ao script tag: injetar no <code>theme.liquid</code>. Só se preferir mexer no tema.</span>
+                </li>
+                <li>
+                  <code>unauthenticated_read_product_listings</code> <code>unauthenticated_read_product_tags</code>
+                  <span class="scope-tag tag-store">Storefront API</span>
+                  <span class="scope-why">Ler produtos publicados pela vitrine sem login do cliente. Fica na seção <strong>Storefront API</strong> do app, não no Admin API.</span>
+                </li>
+                <li>
+                  <code>unauthenticated_write_checkouts</code> <code>unauthenticated_read_checkouts</code>
+                  <span class="scope-tag tag-store">Storefront API</span>
+                  <span class="scope-why">Criar/ler checkout na loja de destino (levar o carrinho pronto). Também é <strong>Storefront API</strong>.</span>
                 </li>
               </ul>
-              <p class="scopes-foot">Marcou os escopos depois de instalar o app? Salve, clique em <strong>Instalar app</strong> de novo e <strong>gere um token novo</strong> — o antigo não ganha as permissões.</p>
+              <p class="scopes-foot">Os <code>unauthenticated_*</code> ficam em <strong>Storefront API</strong> (outra seção do app), não em Escopos do Admin API.<br>Marcou escopo depois de instalar? Salve, clique em <strong>Instalar app</strong> de novo e <strong>gere um token novo</strong> — o antigo não ganha as permissões.</p>
             </div>
 
             <label class="wiz-field">Domínio da loja
@@ -806,20 +865,35 @@
                 <li class="scope-req">
                   <code>read_products</code>
                   <span class="scope-tag tag-req">Obrigatório</span>
-                  <span class="scope-why">Contagem de produtos e o AutoMatch por SKU entre vitrine e checkout.</span>
+                  <span class="scope-why">Catálogo, AutoMatch por SKU e o mapeamento vitrine → checkout.</span>
+                </li>
+                <li>
+                  <code>write_script_tags</code> <code>read_script_tags</code>
+                  <span class="scope-tag tag-opt">Opcional</span>
+                  <span class="scope-why">Instalar e remover o <strong>script de redirect</strong> na vitrine, direto pelo painel — sem mexer no tema.</span>
                 </li>
                 <li>
                   <code>write_orders</code>
                   <span class="scope-tag tag-opt">Opcional</span>
-                  <span class="scope-why">Só se for usar o <strong>pós-compra digital</strong> (criar o pedido do produto digital automaticamente).</span>
+                  <span class="scope-why">Criar o pedido do <strong>pós-compra digital</strong> automaticamente.</span>
                 </li>
                 <li>
                   <code>read_themes</code> <code>write_themes</code>
                   <span class="scope-tag tag-opt">Opcional</span>
-                  <span class="scope-why">Só para injetar o script de rastreamento no tema — <strong>exige o painel publicado numa URL pública</strong> (não funciona rodando local).</span>
+                  <span class="scope-why">Alternativa ao script tag: injetar no <code>theme.liquid</code>. Só se preferir mexer no tema.</span>
+                </li>
+                <li>
+                  <code>unauthenticated_read_product_listings</code> <code>unauthenticated_read_product_tags</code>
+                  <span class="scope-tag tag-store">Storefront API</span>
+                  <span class="scope-why">Ler produtos publicados pela vitrine sem login do cliente. Fica na seção <strong>Storefront API</strong> do app, não no Admin API.</span>
+                </li>
+                <li>
+                  <code>unauthenticated_write_checkouts</code> <code>unauthenticated_read_checkouts</code>
+                  <span class="scope-tag tag-store">Storefront API</span>
+                  <span class="scope-why">Criar/ler checkout na loja de destino (levar o carrinho pronto). Também é <strong>Storefront API</strong>.</span>
                 </li>
               </ul>
-              <p class="scopes-foot">Mudou os escopos com o app já instalado? O lojista precisa <strong>reautorizar</strong> (rode o OAuth de novo) — o access token antigo mantém só as permissões antigas.</p>
+              <p class="scopes-foot">O painel já pede todos esses no OAuth. Os <code>unauthenticated_*</code> exigem a <strong>Storefront API habilitada</strong> no app.<br>Mudou os escopos com o app já instalado? O lojista precisa <strong>reautorizar</strong> (rode o OAuth de novo) — o token antigo mantém só as permissões antigas.</p>
             </div>
 
             <label class="wiz-field">Domínio da loja

@@ -679,6 +679,7 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
       if ($('flow-main')) $('flow-main').hidden = false;
       amLoad().then(loadFlowView);
       ppLoad();
+      scLoad();
     }
     if (state.tab === 'lojas') loadLojas();
   });
@@ -1210,6 +1211,81 @@ async function amSync(btn) {
   }
 }
 
+/* ---------- Redirect da vitrine (ScriptTag) ---------- */
+
+let scState = null;
+
+function scRender(d) {
+  scState = d;
+  const c = d.config || {};
+  $('scEnabled').checked = !!c.enabled;
+  $('scMode').value = c.mode || 'ads';
+  $('scKeep').checked = c.keepParams !== false;
+  $('scSrc').textContent = d.src || '—';
+  $('scVitrine').textContent = d.vitrine ? d.vitrine.name : 'vitrine';
+
+  const local = !/^https:/.test(d.src || '');
+  const status = $('scStatusText');
+  if (!d.vitrine) {
+    status.innerHTML = '<span class="text-amber-400">Sem vitrine</span> <span class="text-gray-600">— defina no Flow</span>';
+  } else if (d.error) {
+    status.innerHTML = `<span class="text-rose-400">Erro</span> <span class="text-gray-600">— ${esc(d.error.slice(0, 60))}</span>`;
+  } else if (d.installed && c.enabled) {
+    status.innerHTML = '<span class="text-emerald-400">✓ Ativo na vitrine</span>';
+  } else if (d.installed && !c.enabled) {
+    status.innerHTML = '<span class="text-amber-400">Instalado, mas desligado</span>';
+  } else {
+    status.innerHTML = '<span class="text-gray-400">Não instalado</span>';
+  }
+
+  $('scInstallBtn').hidden = !!d.installed;
+  $('scRemoveBtn').hidden = !d.installed;
+  if (d.installed) {
+    $('scInstallTitle').textContent = 'Script instalado na vitrine';
+    $('scInstallTitle').className = 'text-sm font-bold text-emerald-400';
+    $('scInstallDesc').textContent = 'A Shopify carrega este arquivo nas páginas da loja.';
+  } else if (local) {
+    $('scInstallTitle').textContent = 'Instale pelo painel publicado';
+    $('scInstallTitle').className = 'text-sm font-bold text-amber-400';
+    $('scInstallDesc').textContent = 'A Shopify só aceita script em HTTPS — abra o painel na Vercel e instale de lá.';
+  } else {
+    $('scInstallTitle').textContent = 'Script ainda não instalado';
+    $('scInstallTitle').className = 'text-sm font-bold text-gray-200';
+    $('scInstallDesc').textContent = 'Precisa do escopo write_script_tags na loja vitrine.';
+  }
+}
+
+async function scLoad() {
+  try { scRender(await api('/api/script/status')); } catch { /* painel fica como está */ }
+}
+
+async function scSaveConfig() {
+  try {
+    const res = await fetch('/api/script/config', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: $('scEnabled').checked, mode: $('scMode').value, keepParams: $('scKeep').checked }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'Falha ao salvar.');
+    showLojaToast('✓ Salvo', $('scEnabled').checked ? 'Redirect ligado.' : 'Redirect desligado — o script fica inerte.');
+    scLoad();
+  } catch (e) { showLojaToast('✗ Erro', e.message); scLoad(); }
+}
+
+async function scInstall(remover) {
+  const btn = remover ? $('scRemoveBtn') : $('scInstallBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/script/${remover ? 'remove' : 'install'}`, { method: 'POST' });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'Falha.');
+    showLojaToast(remover ? '✓ Script removido' : '✓ Script instalado', remover ? 'A vitrine não redireciona mais.' : 'A vitrine já está redirecionando os produtos mapeados.');
+    scLoad();
+  } catch (e) {
+    showLojaToast('✗ Erro', e.message);
+  } finally { btn.disabled = false; }
+}
+
 /* ---------- Pós-compra digital (real) ---------- */
 
 let ppState = null;
@@ -1442,6 +1518,13 @@ $('amSyncBtn').addEventListener('click', () => amSync($('amSyncBtn')));
 $('amSyncProductsBtn').addEventListener('click', () => amSync($('amSyncProductsBtn')));
 $('amViewGroups').addEventListener('click', amShowGroups);
 $('amViewDetails').addEventListener('click', amShowCoverage);
+
+// Redirect da vitrine
+$('scEnabled').addEventListener('change', scSaveConfig);
+$('scMode').addEventListener('change', scSaveConfig);
+$('scKeep').addEventListener('change', scSaveConfig);
+$('scInstallBtn').addEventListener('click', () => scInstall(false));
+$('scRemoveBtn').addEventListener('click', () => scInstall(true));
 
 // Pós-compra digital
 $('ppEnabled').addEventListener('change', () => ppSave({ runNow: true }));
@@ -1991,7 +2074,8 @@ function showWizardSuccess(store) {
 }
 
 // copia os escopos obrigatórios (Custom App e OAuth)
-const ESSENTIAL_SCOPES = 'read_orders,read_products';
+// Admin API (os unauthenticated_* ficam na seção Storefront API do app)
+const ESSENTIAL_SCOPES = 'read_orders,read_products,write_orders,read_script_tags,write_script_tags,read_themes,write_themes';
 [['copyScopesBtn', 'Marque-os no Custom App e gere um token novo.'],
  ['copyScopesOauthBtn', 'Declare-os no app (App setup → Admin API access scopes) e reautorize a loja.']]
   .forEach(([id, hint]) => $(id).addEventListener('click', async () => {

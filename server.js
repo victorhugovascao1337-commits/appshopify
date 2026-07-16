@@ -70,9 +70,16 @@ app.use((req, res, next) => {
     });
   }
   if (!PANEL_PASSWORD) return next(); // local sem senha
-  // O callback do OAuth vem da Shopify: não passa pelo login, mas exige
-  // state assinado por nós + HMAC da Shopify, que é a prova de origem.
-  if (LOGIN_PATHS.has(req.path) || req.path.startsWith('/api/cron/') || req.path === '/api/oauth/callback') return next();
+  /*
+   * Rotas públicas (não passam pelo login) e por quê:
+   * - /api/oauth/callback: vem da Shopify; provado por state assinado + HMAC.
+   * - /api/cron/*: protegido por CRON_SECRET.
+   * - /redirect.js e /api/resolve: rodam no NAVEGADOR DO CLIENTE da loja, que
+   *   obviamente não tem login. Só expõem o mapa de produtos (dado público:
+   *   quem vê a vitrine já vê os produtos), nunca token, pedido ou faturamento.
+   */
+  if (LOGIN_PATHS.has(req.path) || req.path.startsWith('/api/cron/') ||
+      req.path === '/api/oauth/callback' || req.path === '/redirect.js' || req.path === '/api/resolve') return next();
   if (validToken(readCookie(req, COOKIE))) return next();
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Não autenticado.' });
   return res.redirect('/login');
@@ -1569,49 +1576,6 @@ app.post('/api/productmap', async (req, res) => {
   res.json({ ok: true, configurados: Object.keys(map[storeId]).length });
 });
 
-/*
- * Resolve o destino de um produto da vitrine numa loja de checkout.
- * É este endpoint que o script de redirect vai consumir quando o painel
- * estiver numa URL pública.
- */
-app.get('/api/resolve', async (req, res) => {
-  try {
-    const { store: storeId, product } = req.query;
-    if (!storeId || !product) return res.status(400).json({ error: 'Informe store e product.' });
-    const target = (await loadStores()).find((s) => s.id === storeId);
-    if (!target) return res.status(404).json({ error: 'Loja não encontrada.' });
-
-    const map = await loadProductMap();
-    let alvoId = (map[storeId] || {})[String(product)] || null;
-
-    // sem par manual, tenta pelo SKU
-    if (!alvoId) {
-      const { f, stores } = await ensureFlowConfig();
-      const vitrineStore = stores.find((s) => s.id === f.vitrineId);
-      if (vitrineStore) {
-        const [vp, tp] = await Promise.all([
-          cached(`products:${vitrineStore.id}`, 60000, () => fetchProducts(vitrineStore)),
-          cached(`products:${target.id}`, 60000, () => fetchProducts(target)),
-        ]);
-        alvoId = suggestBySku(vp, tp)[product] || null;
-      }
-    }
-    if (!alvoId) return res.status(404).json({ error: 'Esse produto não está mapeado nesta loja.' });
-
-    const produtos = await cached(`products:${target.id}`, 60000, () => fetchProducts(target));
-    const alvo = produtos.find((p) => String(p.id) === String(alvoId));
-    if (!alvo) return res.status(404).json({ error: 'O produto de destino não existe mais na loja.' });
-
-    res.json({
-      ok: true,
-      produto: { id: alvo.id, title: alvo.title, handle: alvo.handle },
-      url: `https://${target.domain}/products/${alvo.handle}`,
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
 /* ---------- OAuth (Partner App) ----------
  *
  * Alternativa ao Custom App: funciona em qualquer loja, inclusive nas que têm
@@ -1625,7 +1589,22 @@ app.get('/api/resolve', async (req, res) => {
  * assinamos, e o formato do domínio (evita redirect aberto / SSRF).
  */
 
-const OAUTH_SCOPES = process.env.SHOPIFY_SCOPES || 'read_orders,read_products,write_orders';
+/*
+ * Escopos pedidos no OAuth. Os `unauthenticated_*` são da Storefront API
+ * (o app precisa ter a Storefront API habilitada) — os demais são Admin API.
+ * Dá para enxugar por ambiente com SHOPIFY_SCOPES.
+ */
+const OAUTH_SCOPES = process.env.SHOPIFY_SCOPES || [
+  'read_orders',                            // métricas e a contagem que gira a rotação
+  'write_orders',                           // pós-compra digital (criar o pedido)
+  'read_products',                          // catálogo e mapeamento de produtos
+  'read_script_tags', 'write_script_tags',  // injetar/remover o redirect na vitrine
+  'read_themes', 'write_themes',            // alternativa: mexer no tema
+  'unauthenticated_read_product_listings',  // Storefront API
+  'unauthenticated_read_product_tags',
+  'unauthenticated_read_checkouts',
+  'unauthenticated_write_checkouts',
+].join(',');
 const OAUTH_STATE_MINUTES = 15;
 
 // só aceita domínio .myshopify.com de verdade
@@ -1823,6 +1802,225 @@ app.get('/api/oauth/callback', async (req, res) => {
     res.redirect(`/?conectada=${encodeURIComponent(name)}`);
   } catch (e) {
     falha(e.message);
+  }
+});
+
+/* ---------- Redirect da vitrine → loja de checkout ----------
+ *
+ * Três peças:
+ *  1. /redirect.js  → script público que roda na vitrine (injetado via ScriptTag)
+ *  2. /api/resolve  → público (CORS): "produto X da vitrine vai para qual URL?"
+ *  3. /api/script/* → instala/remove o ScriptTag na vitrine (write_script_tags)
+ *
+ * O destino é sempre a loja de checkout ATIVA no Flow — então a rotação
+ * (limite de vendas, pausa, limite diário) vale automaticamente no redirect.
+ */
+
+const REDIRECT_DEFAULTS = { enabled: false, mode: 'ads', keepParams: true };
+
+async function loadRedirectConfig() {
+  return { ...REDIRECT_DEFAULTS, ...((await db.readDoc('redirect', {})) || {}) };
+}
+
+async function saveRedirectConfig(c) {
+  return db.writeDoc('redirect', c);
+}
+
+/* ---------- 1. o script que roda na loja do cliente ---------- */
+
+function buildStorefrontScript(panelUrl, cfg) {
+  // sem template literal aninhado: o script vai como texto puro para o navegador do cliente
+  return `/* Painel Contingência — redirect vitrine → checkout */
+(function () {
+  var PANEL = ${JSON.stringify(panelUrl)};
+  var MODE = ${JSON.stringify(cfg.mode)};
+  var KEEP = ${JSON.stringify(!!cfg.keepParams)};
+
+  try {
+    if (!window.Shopify || !window.Shopify.shop) return;
+    if (window.top !== window.self) return;              // não redireciona dentro do editor de tema
+    if (/\\/admin/.test(location.pathname)) return;
+
+    var m = location.pathname.match(/\\/products\\/([^\\/?#]+)/);
+    if (!m) return;                                       // só em página de produto
+    var handle = m[1];
+
+    var qs = new URLSearchParams(location.search);
+    if (qs.get('noredirect') === '1') return;             // atalho para você testar a vitrine
+
+    // modo "ads": só redireciona quem veio de anúncio
+    if (MODE === 'ads') {
+      var adParams = ['fbclid', 'gclid', 'ttclid', 'twclid', 'msclkid', 'utm_source', 'utm_medium', 'utm_campaign'];
+      var veioDeAnuncio = adParams.some(function (p) { return qs.has(p); });
+      if (!veioDeAnuncio) return;
+    }
+
+    var url = PANEL + '/api/resolve?shop=' + encodeURIComponent(Shopify.shop) + '&handle=' + encodeURIComponent(handle);
+    fetch(url, { credentials: 'omit' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || !d.url) return;                          // sem par mapeado: fica na vitrine
+        var alvo = d.url;
+        if (KEEP && location.search) {                     // leva utm/fbclid para a outra loja
+          alvo += (alvo.indexOf('?') === -1 ? '?' : '&') + location.search.slice(1);
+        }
+        location.replace(alvo);                            // replace: não suja o histórico
+      })
+      .catch(function () { /* painel fora do ar: o cliente segue na vitrine */ });
+  } catch (e) { /* nunca quebra a loja do cliente */ }
+})();`;
+}
+
+// servido público (é o navegador do cliente que baixa)
+app.get('/redirect.js', async (req, res) => {
+  try {
+    const cfg = await loadRedirectConfig();
+    res.type('application/javascript');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (!cfg.enabled) return res.send('/* redirect desligado no painel */');
+    res.send(buildStorefrontScript(appBaseUrl(req), cfg));
+  } catch (e) {
+    res.type('application/javascript').send('/* erro ao montar o script */');
+  }
+});
+
+/* ---------- 2. resolve: para onde este produto vai ---------- */
+
+app.get('/api/resolve', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const { shop, handle, product, store: storeParam } = req.query;
+    const cfg = await loadRedirectConfig();
+    const ctx = await ensureFlowConfig();
+    const { f, stores, pool } = ctx;
+
+    // quem pergunta tem que ser a vitrine (evita loop e uso indevido)
+    if (shop) {
+      const vitrine = stores.find((s) => s.id === f.vitrineId);
+      if (!vitrine || normalizeDomain(shop) !== vitrine.domain) {
+        return res.status(404).json({ error: 'Esta loja não é a vitrine configurada.' });
+      }
+      if (!cfg.enabled) return res.status(404).json({ error: 'Redirect desligado.' });
+      if (f.paused) return res.status(404).json({ error: 'Operação pausada no painel.' });
+    }
+
+    // destino: a loja de checkout ATIVA (respeita rotação, pausa e limite diário)
+    let target;
+    if (storeParam) {
+      target = stores.find((s) => s.id === storeParam);
+    } else {
+      const ativa = pool.find((p) => p.cfg.id === f.state.activeId) || pool[0];
+      target = ativa;
+    }
+    if (!target) return res.status(404).json({ error: 'Nenhuma loja de checkout disponível.' });
+
+    // acha o produto da vitrine (por handle ou id)
+    const vitrineStore = stores.find((s) => s.id === f.vitrineId);
+    if (!vitrineStore) return res.status(404).json({ error: 'Vitrine não configurada.' });
+    const vitrineProducts = await cached(`products:${vitrineStore.id}`, 60000, () => fetchProducts(vitrineStore));
+    const origem = handle
+      ? vitrineProducts.find((p) => p.handle === String(handle).toLowerCase())
+      : vitrineProducts.find((p) => String(p.id) === String(product));
+    if (!origem) return res.status(404).json({ error: 'Produto não encontrado na vitrine.' });
+
+    // par manual escolhido no painel; se não houver, tenta pelo SKU
+    const map = await loadProductMap();
+    let alvoId = (map[target.id] || {})[String(origem.id)] || null;
+    const targetProducts = await cached(`products:${target.id}`, 60000, () => fetchProducts(target));
+    if (!alvoId) alvoId = suggestBySku(vitrineProducts, targetProducts)[origem.id] || null;
+    if (!alvoId) return res.status(404).json({ error: 'Esse produto não está mapeado nesta loja de checkout.' });
+
+    const alvo = targetProducts.find((p) => String(p.id) === String(alvoId));
+    if (!alvo) return res.status(404).json({ error: 'O produto de destino não existe mais.' });
+
+    res.json({
+      ok: true,
+      loja: { id: target.id, name: target.name, domain: target.domain },
+      produto: { id: alvo.id, title: alvo.title, handle: alvo.handle },
+      url: `https://${target.domain}/products/${alvo.handle}`,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ---------- 3. instalar/remover o ScriptTag na vitrine ---------- */
+
+const SCRIPT_PATH = '/redirect.js';
+
+async function findScriptTag(store, src) {
+  const { data } = await shopifyFetch(store, 'script_tags.json?limit=250');
+  return (data.script_tags || []).find((t) => String(t.src || '').split('?')[0] === src.split('?')[0]) || null;
+}
+
+app.get('/api/script/status', async (req, res) => {
+  try {
+    const cfg = await loadRedirectConfig();
+    const { f, stores } = await ensureFlowConfig();
+    const vitrine = stores.find((s) => s.id === f.vitrineId);
+    const src = `${appBaseUrl(req)}${SCRIPT_PATH}`;
+    if (!vitrine) return res.json({ config: cfg, src, vitrine: null, installed: false });
+
+    let installed = false;
+    let error = null;
+    try {
+      installed = !!(await findScriptTag(vitrine, src));
+    } catch (e) {
+      error = explainShopifyError(e, vitrine.domain);
+    }
+    res.json({ config: cfg, src, vitrine: publicStore(vitrine), installed, error });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/script/config', async (req, res) => {
+  const cfg = await loadRedirectConfig();
+  const { enabled, mode, keepParams } = req.body || {};
+  if (typeof enabled === 'boolean') cfg.enabled = enabled;
+  if (['ads', 'always'].includes(mode)) cfg.mode = mode;
+  if (typeof keepParams === 'boolean') cfg.keepParams = keepParams;
+  await saveRedirectConfig(cfg);
+  res.json({ ok: true, config: cfg });
+});
+
+app.post('/api/script/install', async (req, res) => {
+  try {
+    const { f, stores } = await ensureFlowConfig();
+    const vitrine = stores.find((s) => s.id === f.vitrineId);
+    if (!vitrine) return res.status(400).json({ error: 'Defina a loja vitrine no Flow antes de instalar o script.' });
+    const base = appBaseUrl(req);
+    if (!/^https:/.test(base)) {
+      return res.status(400).json({ error: `A Shopify só aceita script em HTTPS. O painel está em ${base} — publique-o (Vercel) e instale de lá.` });
+    }
+    const src = `${base}${SCRIPT_PATH}`;
+    const existente = await findScriptTag(vitrine, src);
+    if (existente) return res.json({ ok: true, alreadyInstalled: true, id: existente.id, src });
+
+    const { data } = await shopifyRequest(vitrine, 'script_tags.json', {
+      method: 'POST',
+      body: { script_tag: { event: 'onload', src, display_scope: 'online_store' } },
+    });
+    res.json({ ok: true, id: data.script_tag.id, src });
+  } catch (e) {
+    res.status(400).json({ error: explainShopifyError(e, 'a vitrine') });
+  }
+});
+
+app.post('/api/script/remove', async (req, res) => {
+  try {
+    const { f, stores } = await ensureFlowConfig();
+    const vitrine = stores.find((s) => s.id === f.vitrineId);
+    if (!vitrine) return res.status(400).json({ error: 'Vitrine não configurada.' });
+    const src = `${appBaseUrl(req)}${SCRIPT_PATH}`;
+    const tag = await findScriptTag(vitrine, src);
+    if (!tag) return res.json({ ok: true, naoEstavaInstalado: true });
+    await shopifyRequest(vitrine, `script_tags/${tag.id}.json`, { method: 'DELETE' });
+    res.json({ ok: true, removido: tag.id });
+  } catch (e) {
+    res.status(400).json({ error: explainShopifyError(e, 'a vitrine') });
   }
 });
 
