@@ -473,6 +473,17 @@
               <div class="p-5 bg-white/[0.02] space-y-4">
                 <p class="text-[11px] text-gray-500 leading-relaxed">Quem abrir um produto da <strong id="scVitrine">vitrine</strong> é levado para o produto que você escolheu na <strong>loja de checkout ativa</strong> do Flow. Os pares ficam em <strong>Lojas → (loja de checkout) → Mapeamento</strong>.</p>
 
+                <div class="bg-white/[0.03] rounded-2xl p-4 border border-white/5">
+                  <div class="flex items-center justify-between">
+                    <div><p class="text-sm font-bold text-gray-200">Destino do cliente</p><p class="text-[10px] text-gray-500">Para onde o cliente cai ao ser redirecionado</p></div>
+                    <select id="scDestination" class="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white text-xs font-bold focus:outline-none focus:border-purple-500/50">
+                      <option value="checkout">Checkout direto (carrinho pronto)</option>
+                      <option value="product">Página do produto</option>
+                    </select>
+                  </div>
+                  <p id="scCheckoutStatus" class="text-[10px] text-gray-500 mt-2" hidden></p>
+                </div>
+
                 <div class="flex items-center justify-between bg-white/[0.03] rounded-2xl p-4 border border-white/5">
                   <div><p class="text-sm font-bold text-gray-200">Quando redirecionar</p><p class="text-[10px] text-gray-500">Escolha quem é levado para a loja de checkout</p></div>
                   <select id="scMode" class="bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-white text-xs font-bold focus:outline-none focus:border-purple-500/50">

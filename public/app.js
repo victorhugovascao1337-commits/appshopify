@@ -1221,8 +1221,10 @@ function scRender(d) {
   $('scEnabled').checked = !!c.enabled;
   $('scMode').value = c.mode || 'ads';
   $('scKeep').checked = c.keepParams !== false;
+  $('scDestination').value = c.destination === 'product' ? 'product' : 'checkout';
   $('scSrc').textContent = d.src || '—';
   $('scVitrine').textContent = d.vitrine ? d.vitrine.name : 'vitrine';
+  scRenderCheckout(d.config);
 
   const local = !/^https:/.test(d.src || '');
   const status = $('scStatusText');
@@ -1259,11 +1261,30 @@ async function scLoad() {
   try { scRender(await api('/api/script/status')); } catch { /* painel fica como está */ }
 }
 
+// mostra se a loja de checkout ativa já consegue montar o carrinho (Storefront pronta)
+async function scRenderCheckout(cfg) {
+  const el = $('scCheckoutStatus');
+  if (!el) return;
+  if (!cfg || cfg.destination !== 'checkout') { el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = '<span class="text-gray-500">Verificando a loja de checkout…</span>';
+  try {
+    const r = await api('/api/script/checkout-check');
+    if (r.ready) {
+      el.innerHTML = `<span class="text-emerald-400">✓ Storefront pronta</span> <span class="text-gray-600">— ${esc(r.store ? r.store.name : '')} monta o carrinho e vai direto ao pagamento.</span>`;
+    } else {
+      el.innerHTML = `<span class="text-amber-400">Storefront ainda não liberada</span> <span class="text-gray-600">— ${esc((r.reason || 'reconecte a loja com os escopos unauthenticated_*').slice(0, 120))}. Enquanto isso, cai na página do produto.</span>`;
+    }
+  } catch (e) {
+    el.innerHTML = `<span class="text-gray-600">${esc(e.message.slice(0, 80))}</span>`;
+  }
+}
+
 async function scSaveConfig() {
   try {
     const res = await fetch('/api/script/config', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: $('scEnabled').checked, mode: $('scMode').value, keepParams: $('scKeep').checked }),
+      body: JSON.stringify({ enabled: $('scEnabled').checked, mode: $('scMode').value, keepParams: $('scKeep').checked, destination: $('scDestination').value }),
     });
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'Falha ao salvar.');
@@ -1523,6 +1544,7 @@ $('amViewDetails').addEventListener('click', amShowCoverage);
 $('scEnabled').addEventListener('change', scSaveConfig);
 $('scMode').addEventListener('change', scSaveConfig);
 $('scKeep').addEventListener('change', scSaveConfig);
+$('scDestination').addEventListener('change', scSaveConfig);
 $('scInstallBtn').addEventListener('click', () => scInstall(false));
 $('scRemoveBtn').addEventListener('click', () => scInstall(true));
 

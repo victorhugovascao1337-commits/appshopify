@@ -551,6 +551,8 @@ async function fetchProducts(store) {
         vendor: p.vendor || '',
         image: p.image ? p.image.src : null,
         variants: variants.length,
+        // primeira variante disponível → é ela que vira "merchandise" no carrinho do checkout direto
+        variantId: (variants.find((v) => (v.inventory_quantity ?? 1) > 0 || !v.inventory_management) || variants[0] || {}).id || null,
         sku: variants[0] ? variants[0].sku || '' : '',
         priceMin: prices.length ? Math.min(...prices) : 0,
         priceMax: prices.length ? Math.max(...prices) : 0,
@@ -1816,7 +1818,9 @@ app.get('/api/oauth/callback', async (req, res) => {
  * (limite de vendas, pausa, limite diário) vale automaticamente no redirect.
  */
 
-const REDIRECT_DEFAULTS = { enabled: false, mode: 'ads', keepParams: true };
+// destination: 'checkout' = monta o carrinho na loja de checkout e joga direto no pagamento (Storefront API);
+//              'product'  = leva para a página do produto na loja de checkout.
+const REDIRECT_DEFAULTS = { enabled: false, mode: 'ads', keepParams: true, destination: 'checkout' };
 
 async function loadRedirectConfig() {
   return { ...REDIRECT_DEFAULTS, ...((await db.readDoc('redirect', {})) || {}) };
@@ -1824,6 +1828,95 @@ async function loadRedirectConfig() {
 
 async function saveRedirectConfig(c) {
   return db.writeDoc('redirect', c);
+}
+
+/* ---------- Storefront API: token + carrinho (checkout direto) ----------
+ *
+ * O próprio app Admin (com os escopos unauthenticated_*) cria um Storefront
+ * access token para a loja — não precisa instalar o app "Headless" à parte.
+ * Com esse token montamos um carrinho (cartCreate) e pegamos o checkoutUrl,
+ * que leva o cliente direto para o pagamento com o produto já no carrinho.
+ */
+
+const STOREFRONT_TOKEN_TITLE = 'Painel Contingencia';
+
+// traduz a falha de criar o Storefront token em algo acionável
+function explainStorefrontError(e) {
+  const raw = String(e && e.message || e);
+  if (/extendable|storefront access token|403|unauthenticated|access denied|scope/i.test(raw)) {
+    return 'A loja de checkout ainda não tem a Storefront API liberada. '
+      + 'Custom App: em Configuração → Admin API/Storefront API marque os escopos unauthenticated_* (Storefront API), salve e reinstale o app. '
+      + 'Partner App (OAuth): reconecte a loja para aplicar os novos escopos. Enquanto isso o cliente cai na página do produto.';
+  }
+  return raw.slice(0, 180);
+}
+
+async function loadSfTokens() {
+  return (await db.readDoc('storefront_tokens', {})) || {};
+}
+async function saveSfToken(storeId, token) {
+  const all = await loadSfTokens();
+  all[storeId] = token;
+  await db.writeDoc('storefront_tokens', all);
+}
+
+// devolve (criando se preciso) o Storefront access token da loja. Exige os escopos unauthenticated_*.
+async function ensureStorefrontToken(store) {
+  const all = await loadSfTokens();
+  if (all[store.id]) return all[store.id];
+
+  // reaproveita um token já existente antes de criar outro
+  try {
+    const { data } = await shopifyFetch(store, 'storefront_access_tokens.json');
+    const existing = (data.storefront_access_tokens || []).find((t) => t.title === STOREFRONT_TOKEN_TITLE)
+      || (data.storefront_access_tokens || [])[0];
+    if (existing && existing.access_token) {
+      await saveSfToken(store.id, existing.access_token);
+      return existing.access_token;
+    }
+  } catch { /* segue para criar */ }
+
+  const { data } = await shopifyRequest(store, 'storefront_access_tokens.json', {
+    method: 'POST',
+    body: { storefront_access_token: { title: STOREFRONT_TOKEN_TITLE } },
+  });
+  const tok = data && data.storefront_access_token && data.storefront_access_token.access_token;
+  if (!tok) throw new Error('A loja não devolveu um Storefront access token.');
+  await saveSfToken(store.id, tok);
+  return tok;
+}
+
+async function storefrontRequest(store, query, variables) {
+  const token = await ensureStorefrontToken(store);
+  const res = await fetch(`https://${store.domain}/api/${API_VERSION}/graphql.json`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Shopify-Storefront-Access-Token': token },
+    body: JSON.stringify({ query, variables }),
+  });
+  const text = await res.text().catch(() => '');
+  if (!res.ok) {
+    const err = new Error(`Storefront ${res.status} em ${store.domain}: ${text.slice(0, 200)}`);
+    err.status = res.status;
+    throw err;
+  }
+  let json;
+  try { json = JSON.parse(text); } catch { throw new Error('Resposta inválida da Storefront API.'); }
+  if (json.errors) throw new Error(typeof json.errors === 'string' ? json.errors : JSON.stringify(json.errors));
+  return json.data;
+}
+
+// monta o carrinho com a variante e devolve o checkoutUrl (pagamento direto)
+async function buildCheckoutUrl(store, variantId) {
+  if (!variantId) throw new Error('Produto de destino sem variante para o carrinho.');
+  const q = 'mutation cc($lines:[CartLineInput!]!){cartCreate(input:{lines:$lines}){cart{checkoutUrl} userErrors{field message}}}';
+  const data = await storefrontRequest(store, q, {
+    lines: [{ merchandiseId: `gid://shopify/ProductVariant/${variantId}`, quantity: 1 }],
+  });
+  const ue = (data.cartCreate && data.cartCreate.userErrors) || [];
+  if (ue.length) throw new Error(ue[0].message);
+  const url = data.cartCreate && data.cartCreate.cart && data.cartCreate.cart.checkoutUrl;
+  if (!url) throw new Error('A Storefront API não devolveu o checkoutUrl.');
+  return url;
 }
 
 /* ---------- 1. o script que roda na loja do cliente ---------- */
@@ -1935,11 +2028,31 @@ app.get('/api/resolve', async (req, res) => {
     const alvo = targetProducts.find((p) => String(p.id) === String(alvoId));
     if (!alvo) return res.status(404).json({ error: 'O produto de destino não existe mais.' });
 
+    const productUrl = `https://${target.domain}/products/${alvo.handle}`;
+    let url = productUrl;
+    let via = 'product';
+    let warning = null;
+
+    // checkout direto: monta o carrinho na loja de checkout e manda para o pagamento
+    if (cfg.destination === 'checkout') {
+      try {
+        url = await buildCheckoutUrl(target, alvo.variantId);
+        via = 'checkout';
+      } catch (e) {
+        // nunca deixa o cliente na mão: cai para a página do produto e avisa o painel
+        via = 'product-fallback';
+        warning = e.message;
+      }
+    }
+
     res.json({
       ok: true,
+      via,
+      warning,
       loja: { id: target.id, name: target.name, domain: target.domain },
       produto: { id: alvo.id, title: alvo.title, handle: alvo.handle },
-      url: `https://${target.domain}/products/${alvo.handle}`,
+      productUrl,
+      url,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1978,12 +2091,34 @@ app.get('/api/script/status', async (req, res) => {
 
 app.put('/api/script/config', async (req, res) => {
   const cfg = await loadRedirectConfig();
-  const { enabled, mode, keepParams } = req.body || {};
+  const { enabled, mode, keepParams, destination } = req.body || {};
   if (typeof enabled === 'boolean') cfg.enabled = enabled;
   if (['ads', 'always'].includes(mode)) cfg.mode = mode;
   if (typeof keepParams === 'boolean') cfg.keepParams = keepParams;
+  if (['checkout', 'product'].includes(destination)) cfg.destination = destination;
   await saveRedirectConfig(cfg);
   res.json({ ok: true, config: cfg });
+});
+
+// checa se a loja de checkout ativa consegue montar carrinho (Storefront pronta?)
+app.get('/api/script/checkout-check', async (req, res) => {
+  try {
+    const { f, stores, pool } = await ensureFlowConfig();
+    const ativa = pool.find((p) => p.cfg.id === f.state.activeId) || pool[0];
+    if (!ativa) return res.json({ ready: false, reason: 'Nenhuma loja de checkout no Flow.' });
+    try {
+      await ensureStorefrontToken(ativa);
+      res.json({ ready: true, store: { name: ativa.name, domain: ativa.domain } });
+    } catch (e) {
+      res.json({
+        ready: false,
+        store: { name: ativa.name, domain: ativa.domain },
+        reason: explainStorefrontError(e),
+      });
+    }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post('/api/script/install', async (req, res) => {
