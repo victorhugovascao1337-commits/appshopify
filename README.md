@@ -48,7 +48,15 @@ O mesmo código roda hospedado: **Vercel** serve o painel e a API, **Supabase** 
 
 > Sem `PANEL_PASSWORD`, o painel **se recusa a servir** quando hospedado — de propósito, para sua URL pública não expor as lojas e os tokens.
 
-**3. Cron do pós-compra:** o `vercel.json` já agenda `/api/cron/post-purchase` de hora em hora. Rodando local isso não é usado (o processo varre sozinho a cada 60s). Se o seu plano da Vercel limitar a frequência de cron, dá para apontar um cron externo para essa mesma URL.
+**3. Cron do pós-compra:** rodando local isso nem é usado — o processo varre sozinho a cada 60s. Hospedado, alguém precisa chamar `/api/cron/post-purchase`:
+
+- O **plano Hobby da Vercel só permite cron 1x por dia**, o que é lento demais para gerar o pedido digital logo após a venda. Por isso o `vercel.json` agenda só um passe diário (rede de segurança).
+- Quem chama de **5 em 5 minutos** é o **GitHub Actions** (`.github/workflows/post-purchase-cron.yml`, grátis). Configure em *Settings → Secrets and variables → Actions*:
+  - `PANEL_URL` → `https://seu-app.vercel.app`
+  - `CRON_SECRET` → o mesmo valor da variável na Vercel
+- Alternativas: plano Pro da Vercel (cron por minuto) ou um cron externo (ex.: cron-job.org) apontando para a mesma URL.
+
+> O workflow do GitHub Actions é desativado automaticamente após ~60 dias sem commits no repositório. Se isso acontecer, basta reativá-lo na aba Actions.
 
 ### Segurança
 

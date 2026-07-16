@@ -1,0 +1,44 @@
+# Cron do pós-compra digital.
+#
+# O plano Hobby da Vercel só permite cron 1x por dia — o que é lento demais para
+# gerar o pedido digital logo após a venda. Então quem chama de 5 em 5 minutos é
+# o GitHub Actions (grátis). O cron diário da Vercel fica como rede de segurança.
+#
+# Configure em Settings → Secrets and variables → Actions:
+#   PANEL_URL   → https://seu-app.vercel.app   (sem barra no final)
+#   CRON_SECRET → o mesmo valor da variável CRON_SECRET na Vercel
+name: Pós-compra digital
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # a cada 5 min (o GitHub pode atrasar sob carga)
+  workflow_dispatch: {} # permite rodar na mão pelo botão "Run workflow"
+
+concurrency:
+  group: post-purchase
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamar o painel
+        env:
+          PANEL_URL: ${{ secrets.PANEL_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$PANEL_URL" ]; then
+            echo "PANEL_URL não configurado nos secrets do repositório."
+            exit 1
+          fi
+          code=$(curl -s -o /tmp/out.json -w '%{http_code}' -m 60 \
+            -X POST "$PANEL_URL/api/cron/post-purchase" \
+            -H "Authorization: Bearer $CRON_SECRET")
+          echo "HTTP $code"
+          cat /tmp/out.json
+          echo
+          # 401 = CRON_SECRET errado; 5xx = erro no painel
+          if [ "$code" != "200" ]; then
+            echo "::error::O painel respondeu $code"
+            exit 1
+          fi
