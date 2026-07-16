@@ -463,6 +463,21 @@ app.post('/api/stores', async (req, res) => {
   stores.push(store);
   await saveStores(stores);
   cache.clear();
+
+  /*
+   * Loja nova entra no pool de checkout automaticamente (menos a primeira, que
+   * vira a vitrine). Sem isso ela ficava só em "disponíveis", o Flow continuava
+   * vazio e não dava para mapear produto nenhum — parecia que faltava o recurso.
+   */
+  try {
+    const { f } = await ensureFlowConfig();
+    if (f.vitrineId && store.id !== f.vitrineId && !f.pool.some((p) => p.id === store.id)) {
+      f.pool.push({ id: store.id, limit: DEFAULT_LIMIT, dailyLimit: 0, paused: false, resetAt: null });
+      if (!f.state.activeId) f.state = { activeId: store.id, activatedAt: new Date().toISOString() };
+      await saveFlowConfig(f);
+    }
+  } catch { /* o painel funciona mesmo se o flow ainda não estiver configurado */ }
+
   res.json({ store: publicStore(store) });
 });
 
@@ -1442,6 +1457,150 @@ app.all('/api/cron/post-purchase', async (req, res) => {
   try {
     const r = await runPostPurchaseCycle();
     res.json({ ok: true, at: new Date().toISOString(), ...r });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ---------- Mapeamento de produtos: vitrine → loja de checkout ----------
+ *
+ * O par é escolhido à mão, produto a produto: "quem clicar NESTE produto da
+ * vitrine vai para AQUELE produto da loja de checkout".
+ *
+ * É por produto (não por variante) porque é assim que o redirect funciona:
+ * o cliente clica num produto e abre a página do produto na outra loja.
+ * Independe de SKU — serve para catálogos que não usam SKU.
+ *
+ * data key: 'productmap' → { "<storeId>": { "<vitrineProductId>": "<storeProductId>" } }
+ */
+
+async function loadProductMap() {
+  return (await db.readDoc('productmap', {})) || {};
+}
+
+async function saveProductMap(m) {
+  return db.writeDoc('productmap', m);
+}
+
+// sugestão automática por SKU (só quando os dois lados têm SKU)
+function suggestBySku(vitrineProducts, targetProducts) {
+  const bySku = new Map();
+  for (const p of targetProducts) {
+    const k = normSku(p.sku);
+    if (k && !bySku.has(k)) bySku.set(k, p.id);
+  }
+  const out = {};
+  for (const p of vitrineProducts) {
+    const k = normSku(p.sku);
+    if (k && bySku.has(k)) out[p.id] = bySku.get(k);
+  }
+  return out;
+}
+
+app.get('/api/productmap', async (req, res) => {
+  try {
+    const storeId = req.query.store;
+    const { f, stores, pool } = await ensureFlowConfig();
+    const vitrineStore = stores.find((s) => s.id === f.vitrineId);
+    const target = stores.find((s) => s.id === storeId);
+
+    if (!target) return res.status(404).json({ error: 'Loja não encontrada.' });
+    if (!vitrineStore) {
+      return res.json({ status: 'sem_vitrine', error: 'Defina a loja vitrine no Flow.' });
+    }
+    if (target.id === vitrineStore.id) {
+      return res.json({ status: 'e_a_vitrine', vitrine: publicStore(vitrineStore) });
+    }
+    if (!pool.some((p) => p.id === target.id)) {
+      return res.json({ status: 'fora_do_pool', vitrine: publicStore(vitrineStore), target: publicStore(target) });
+    }
+
+    const [vitrineProducts, targetProducts] = await Promise.all([
+      cached(`products:${vitrineStore.id}`, 60000, () => fetchProducts(vitrineStore)),
+      cached(`products:${target.id}`, 60000, () => fetchProducts(target)),
+    ]);
+
+    const map = await loadProductMap();
+    const pairs = map[storeId] || {};
+    const sugestoes = suggestBySku(vitrineProducts, targetProducts);
+
+    const linhas = vitrineProducts.map((p) => {
+      const escolhido = pairs[String(p.id)] || null;
+      const sugerido = sugestoes[p.id] || null;
+      const alvoId = escolhido || sugerido;
+      const alvo = alvoId ? targetProducts.find((t) => String(t.id) === String(alvoId)) : null;
+      return {
+        vitrine: { id: p.id, title: p.title, image: p.image, price: p.priceMin, sku: p.sku, handle: p.handle },
+        alvo: alvo ? { id: alvo.id, title: alvo.title, image: alvo.image, price: alvo.priceMin, handle: alvo.handle } : null,
+        origem: escolhido ? 'manual' : sugerido ? 'sku' : null,
+      };
+    });
+
+    res.json({
+      status: 'ok',
+      vitrine: publicStore(vitrineStore),
+      target: publicStore(target),
+      opcoes: targetProducts.map((p) => ({ id: p.id, title: p.title, image: p.image, price: p.priceMin, sku: p.sku })),
+      linhas,
+      total: linhas.length,
+      configurados: linhas.filter((l) => l.alvo).length,
+      manuais: linhas.filter((l) => l.origem === 'manual').length,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// define ou limpa o par de um produto
+app.post('/api/productmap', async (req, res) => {
+  const { storeId, vitrineProductId, storeProductId } = req.body || {};
+  if (!storeId || !vitrineProductId) return res.status(400).json({ error: 'Informe a loja e o produto da vitrine.' });
+  const map = await loadProductMap();
+  map[storeId] = map[storeId] || {};
+  if (storeProductId) map[storeId][String(vitrineProductId)] = String(storeProductId);
+  else delete map[storeId][String(vitrineProductId)];
+  await saveProductMap(map);
+  res.json({ ok: true, configurados: Object.keys(map[storeId]).length });
+});
+
+/*
+ * Resolve o destino de um produto da vitrine numa loja de checkout.
+ * É este endpoint que o script de redirect vai consumir quando o painel
+ * estiver numa URL pública.
+ */
+app.get('/api/resolve', async (req, res) => {
+  try {
+    const { store: storeId, product } = req.query;
+    if (!storeId || !product) return res.status(400).json({ error: 'Informe store e product.' });
+    const target = (await loadStores()).find((s) => s.id === storeId);
+    if (!target) return res.status(404).json({ error: 'Loja não encontrada.' });
+
+    const map = await loadProductMap();
+    let alvoId = (map[storeId] || {})[String(product)] || null;
+
+    // sem par manual, tenta pelo SKU
+    if (!alvoId) {
+      const { f, stores } = await ensureFlowConfig();
+      const vitrineStore = stores.find((s) => s.id === f.vitrineId);
+      if (vitrineStore) {
+        const [vp, tp] = await Promise.all([
+          cached(`products:${vitrineStore.id}`, 60000, () => fetchProducts(vitrineStore)),
+          cached(`products:${target.id}`, 60000, () => fetchProducts(target)),
+        ]);
+        alvoId = suggestBySku(vp, tp)[product] || null;
+      }
+    }
+    if (!alvoId) return res.status(404).json({ error: 'Esse produto não está mapeado nesta loja.' });
+
+    const produtos = await cached(`products:${target.id}`, 60000, () => fetchProducts(target));
+    const alvo = produtos.find((p) => String(p.id) === String(alvoId));
+    if (!alvo) return res.status(404).json({ error: 'O produto de destino não existe mais na loja.' });
+
+    res.json({
+      ok: true,
+      produto: { id: alvo.id, title: alvo.title, handle: alvo.handle },
+      url: `https://${target.domain}/products/${alvo.handle}`,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

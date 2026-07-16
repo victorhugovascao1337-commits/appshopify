@@ -2102,11 +2102,99 @@ async function loadStoreProducts(storeId) {
   }
 }
 
+/* ---------- aba Mapeamento (vitrine → checkout, produto a produto) ---------- */
+
+function mapAviso(ico, titulo, texto, acao) {
+  return `<div class="placeholder-empty"><span class="pe-ico">${ico}</span><div class="pe-title">${titulo}</div><div>${texto}</div>${acao || ''}</div>`;
+}
+
+function mapCardHtml(linha, opcoes) {
+  const v = linha.vitrine;
+  const a = linha.alvo;
+  const img = (src, alt) => src
+    ? `<img class="map-thumb" src="${esc(src)}" alt="${esc(alt || '')}" loading="lazy">`
+    : '<span class="map-thumb map-thumb-empty">📦</span>';
+  const selo = linha.origem === 'manual'
+    ? '<span class="map-badge map-badge-manual">✓ Escolhido por você</span>'
+    : linha.origem === 'sku'
+      ? '<span class="map-badge map-badge-sku">Sugerido pelo SKU</span>'
+      : '<span class="map-badge map-badge-off">Sem destino</span>';
+  return `<div class="map-card ${a ? 'is-set' : ''}" data-vid="${esc(String(v.id))}">
+    <div class="map-card-head">${selo}<span class="map-price">${fmtMoney(v.price || 0)}</span></div>
+    <div class="map-pair">
+      <div class="map-side">
+        <div class="map-side-label">🏬 Vitrine</div>
+        ${img(v.image, v.title)}
+        <div class="map-name" title="${esc(v.title)}">${esc(v.title)}</div>
+      </div>
+      <div class="map-arrow" aria-hidden="true">→</div>
+      <div class="map-side">
+        <div class="map-side-label">🛒 Checkout</div>
+        ${a ? img(a.image, a.title) : '<span class="map-thumb map-thumb-empty">—</span>'}
+        <div class="map-name map-name-target" title="${a ? esc(a.title) : ''}">${a ? esc(a.title) : '<span class="map-none">nenhum</span>'}</div>
+      </div>
+    </div>
+    <select class="map-select" data-vid="${esc(String(v.id))}">
+      <option value="">— não redirecionar —</option>
+      ${opcoes.map((o) => `<option value="${esc(String(o.id))}" ${a && String(a.id) === String(o.id) ? 'selected' : ''}>${esc(o.title)}</option>`).join('')}
+    </select>
+  </div>`;
+}
+
+async function loadStoreMapping(storeId) {
+  const panel = document.querySelector('#lojasDetail .dpanel[data-dpanel="mapeamento"]');
+  if (!panel) return;
+  panel.innerHTML = mapAviso('🔗', 'Carregando…', 'Buscando os produtos das duas lojas na Shopify.');
+  try {
+    const d = await api(`/api/productmap?store=${storeId}`);
+
+    if (d.status === 'sem_vitrine') return (panel.innerHTML = mapAviso('🏬', 'Defina a loja vitrine', 'Vá no Flow e escolha qual loja é a vitrine (a que recebe o tráfego).'));
+    if (d.status === 'e_a_vitrine') {
+      return (panel.innerHTML = mapAviso('🏬', 'Esta é a loja vitrine', 'O mapeamento é configurado nas <strong>lojas de checkout</strong> — é lá que você escolhe para onde cada produto da vitrine leva. Conecte uma segunda loja e abra o Mapeamento dela.'));
+    }
+    if (d.status === 'fora_do_pool') {
+      return (panel.innerHTML = mapAviso('🔀', 'Loja fora do pool de checkout', 'Adicione esta loja ao pool no Flow para poder mapear os produtos.', '<button class="control btn-primary" style="margin-top:14px" onclick="document.querySelector(\'.tab-btn[data-tab=&quot;flow&quot;]\').click()">Ir para o Flow</button>'));
+    }
+
+    const pct = d.total ? Math.round((d.configurados / d.total) * 100) : 0;
+    panel.innerHTML = `<div class="card">
+      <div class="card-head">
+        <h2>🔗 Mapeamento de produtos</h2>
+        <span class="map-counter ${d.configurados === d.total ? 'ok' : ''}">${fmtInt(d.configurados)}/${fmtInt(d.total)} configurados</span>
+      </div>
+      <p class="hint">Quem clicar num produto da <strong>${esc(d.vitrine.name)}</strong> (vitrine) vai para o produto que você escolher da <strong>${esc(d.target.name)}</strong> (checkout). Os pares valem mesmo sem SKU.</p>
+      <div class="map-progress"><div class="map-progress-fill" style="width:${pct}%"></div></div>
+      <div class="map-grid">${d.linhas.map((l) => mapCardHtml(l, d.opcoes)).join('')}</div>
+    </div>`;
+
+    panel.querySelectorAll('.map-select').forEach((sel) => sel.addEventListener('change', async () => {
+      const card = sel.closest('.map-card');
+      card.classList.add('is-saving');
+      try {
+        const res = await fetch('/api/productmap', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ storeId, vitrineProductId: sel.dataset.vid, storeProductId: sel.value || null }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Falha ao salvar.');
+        showLojaToast(sel.value ? '✓ Par salvo' : '✓ Par removido', sel.value ? 'Esse produto da vitrine passa a levar para o que você escolheu.' : 'Esse produto deixa de redirecionar.');
+        loadStoreMapping(storeId); // recarrega para atualizar foto, selo e contador
+      } catch (e) {
+        card.classList.remove('is-saving');
+        showLojaToast('✗ Erro', e.message);
+      }
+    }));
+  } catch (e) {
+    panel.innerHTML = mapAviso('⚠️', 'Não deu para carregar', esc(e.message));
+  }
+}
+
 function setDetailTab(tab) {
   lojas.detailTab = tab;
   document.querySelectorAll('#detailTabs .dtab').forEach((b) => b.classList.toggle('active', b.dataset.dtab === tab));
   document.querySelectorAll('#lojasDetail .dpanel').forEach((p) => { p.hidden = p.dataset.dpanel !== tab; });
   if (tab === 'produtos' && lojas.detailId) loadStoreProducts(lojas.detailId);
+  if (tab === 'mapeamento' && lojas.detailId) loadStoreMapping(lojas.detailId);
   const ph = DPANEL_PLACEHOLDER[tab];
   if (ph) {
     const panel = document.querySelector(`#lojasDetail .dpanel[data-dpanel="${tab}"]`);
