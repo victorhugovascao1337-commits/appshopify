@@ -2062,7 +2062,7 @@ function setWizardMode(mode) {
   lojas.wizardMode = mode;
   document.querySelectorAll('.mode-opt').forEach((b) => b.classList.toggle('selected', b.dataset.mode === mode));
   document.querySelectorAll('.mode-panel').forEach((p) => { p.hidden = p.dataset.modePanel !== mode; });
-  $('wizValidate').innerHTML = mode === 'oauth' ? '↗ Autorizar via OAuth' : '⚡ Validar e conectar';
+  $('wizAdd').innerHTML = mode === 'oauth' ? 'Autorizar ↗' : 'Adicionar';
   if (mode === 'oauth') loadOauthInfo();
 }
 
@@ -2147,13 +2147,44 @@ async function oauthStart() {
   }
 }
 
-$('wizValidate').addEventListener('click', async () => {
-  if (lojas.wizardMode === 'oauth') return oauthStart();
+function collectCustom() {
   const domain = $('wizDomain').value.trim();
   const token = $('wizToken').value.trim();
   const name = $('wizName').value.trim();
-  if (!domain || !token) { setWizStatus('wizStatus', '✗ Informe o domínio e o token.', 'err'); return; }
   const storefrontToken = lojas.wizardRole === 'checkout' ? $('wizSfToken').value.trim() : '';
+  return { domain, token, name, storefrontToken };
+}
+
+// botão "Validar": só testa os tokens, não adiciona
+$('wizValidate').addEventListener('click', async () => {
+  if (lojas.wizardMode === 'oauth') {
+    const d = $('oauthDomain').value.trim();
+    if (!/\.myshopify\.com$/i.test(d)) { setWizStatus('oauthStatus', '✗ Informe o domínio .myshopify.com da loja.', 'err'); return; }
+    setWizStatus('oauthStatus', '✓ Domínio ok. Clique em Adicionar para autorizar no Shopify.', 'ok');
+    return;
+  }
+  const { domain, token, storefrontToken } = collectCustom();
+  if (!domain || !token) { setWizStatus('wizStatus', '✗ Informe o domínio e o token.', 'err'); return; }
+  setWizStatus('wizStatus', 'Validando na Shopify…', 'loading');
+  try {
+    const res = await fetch('/api/stores', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain, token, role: lojas.wizardRole, storefrontToken, validateOnly: true }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Token inválido.');
+    let msg = `✓ Admin token válido (moeda ${data.currency}).`;
+    if (data.sfOk === true) msg += ' Token Storefront válido ✓.';
+    else if (data.sfOk === false) msg += ` Storefront ✗: ${data.sfError}`;
+    setWizStatus('wizStatus', msg, data.sfOk === false ? 'err' : 'ok');
+  } catch (e) { setWizStatus('wizStatus', `✗ ${e.message}`, 'err'); }
+});
+
+// botão "Adicionar": conecta de verdade
+$('wizAdd').addEventListener('click', async () => {
+  if (lojas.wizardMode === 'oauth') return oauthStart();
+  const { domain, token, name, storefrontToken } = collectCustom();
+  if (!domain || !token) { setWizStatus('wizStatus', '✗ Informe o domínio e o token.', 'err'); return; }
   await wizConnectCustom({ name, domain, token, role: lojas.wizardRole, storefrontToken });
 });
 

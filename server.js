@@ -479,7 +479,7 @@ app.post('/api/stores', async (req, res) => {
   const stores = await loadStores();
   const existente = stores.find((s) => s.domain === domain);
   const reconnect = !!req.body.reconnect;
-  if (existente && !reconnect) {
+  if (existente && !reconnect && !req.body.validateOnly) {
     return res.status(409).json({ error: 'Essa loja já está conectada. Para trocar o token dela (ex.: novo Custom App), reconecte por cima.', canReconnect: true, storeId: existente.id });
   }
   let currency = 'BRL';
@@ -488,6 +488,16 @@ app.post('/api/stores', async (req, res) => {
     currency = data.shop.currency;
   } catch (e) {
     return res.status(400).json({ error: explainShopifyError(e, domain) });
+  }
+
+  // botão "Validar": checa os tokens sem adicionar a loja
+  if (req.body.validateOnly) {
+    let sfOk = null, sfError = null;
+    if (req.body.role === 'checkout' && req.body.storefrontToken) {
+      const r = await validateAndSaveSfToken({ id: existente ? existente.id : 'validate', domain }, req.body.storefrontToken, { save: false });
+      sfOk = r.ok; sfError = r.ok ? null : r.error;
+    }
+    return res.json({ ok: true, valid: true, currency, sfOk, sfError });
   }
 
   // reconexão: troca o token da loja existente, preservando id, pool, mapeamentos e token Storefront
@@ -1956,12 +1966,14 @@ async function saveSfToken(storeId, token) {
   await db.writeDoc('storefront_tokens', all);
 }
 
-// valida um token Storefront contra a própria loja e salva. Retorna { ok, shop, error }.
-async function validateAndSaveSfToken(store, token) {
+// valida um token Storefront contra a própria loja. Com save=true (padrão), persiste.
+async function validateAndSaveSfToken(store, token, { save = true } = {}) {
   token = String(token || '').trim();
   if (!token) {
-    const all = await loadSfTokens();
-    if (all[store.id]) { delete all[store.id]; await db.writeDoc('storefront_tokens', all); }
+    if (save) {
+      const all = await loadSfTokens();
+      if (all[store.id]) { delete all[store.id]; await db.writeDoc('storefront_tokens', all); }
+    }
     return { ok: true, removed: true };
   }
   let r;
@@ -1980,7 +1992,7 @@ async function validateAndSaveSfToken(store, token) {
   if (!r.ok) return { ok: false, error: `A loja respondeu ${r.status} ao validar o token. ${txt.slice(0, 120)}` };
   let j; try { j = JSON.parse(txt); } catch { j = null; }
   if (!j || j.errors || !(j.data && j.data.shop)) return { ok: false, error: 'Token Storefront inválido para esta loja.' };
-  await saveSfToken(store.id, token);
+  if (save) await saveSfToken(store.id, token);
   return { ok: true, shop: j.data.shop.name };
 }
 

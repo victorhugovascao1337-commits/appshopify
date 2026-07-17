@@ -988,7 +988,7 @@
 
           <!-- Token Storefront (só aparece quando o papel é Checkout) -->
           <div id="wizSfBox" class="wiz-sf-box" hidden>
-            <label class="wiz-field" style="margin-bottom:6px">Token Storefront <span class="opt">(checkout direto — opcional)</span>
+            <label class="wiz-field" style="margin-bottom:6px">Token Storefront <span class="opt">(público — checkout direto)</span>
               <span class="help-tip" tabindex="0"><span class="help-ico">?</span><span class="help-pop"><strong>Onde encontrar: Token Storefront</strong><ol><li>Nesta loja de checkout, instale o app <strong>Headless</strong> pela App Store.</li><li>Abra <strong>Storefronts → API access</strong>.</li><li>Copie o <strong>Public access token</strong>.</li><li>Cole aqui.</li></ol><span class="pop-foot">Habilita o carrinho pronto no checkout. Sem ele, o cliente cai na página do produto — nada quebra.</span></span></span>
               <input type="password" id="wizSfToken" placeholder="Public access token do Headless" autocomplete="off">
               <span class="wiz-hint">Já cola aqui para não precisar ir no Flow depois. Validado ao conectar.</span>
@@ -997,7 +997,10 @@
 
           <div class="wiz-actions">
             <button class="control btn-ghost" id="wizToStep1">‹ Voltar</button>
-            <button class="control btn-primary" id="wizValidate">⚡ Validar e conectar</button>
+            <div>
+              <button class="control btn-ghost" id="wizValidate">Validar</button>
+              <button class="control btn-primary" id="wizAdd">Adicionar</button>
+            </div>
           </div>
         </div>
 
