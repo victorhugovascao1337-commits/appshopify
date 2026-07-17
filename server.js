@@ -558,6 +558,7 @@ async function buildStoresOverview() {
   if (all.length === 0) return [];
 
   const results = await collectOrders(all, bounds.start, bounds.end);
+  const { f } = await ensureFlowConfig(); // para saber o papel (vitrine x checkout) de cada loja
   return Promise.all(
     results.map(async (r) => {
       let products = null;
@@ -569,8 +570,11 @@ async function buildStoresOverview() {
         }
       }
       const m = sumMetrics(r.orders);
+      const role = r.store.id === f.vitrineId ? 'vitrine'
+        : (f.pool.some((p) => p.id === r.store.id) ? 'checkout' : null);
       return {
         ...publicStore(r.store),
+        role,
         products,
         orders30d: m.orders,
         revenue30d: m.sales,

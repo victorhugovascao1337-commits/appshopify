@@ -1983,6 +1983,7 @@ function renderStoresGrid(stores) {
       </div>
       <div class="sc-tags">
         <span class="badge ${ok ? 'badge-ok' : 'badge-err'}">${ok ? 'CONECTADA' : 'ERRO'}</span>
+        ${s.role === 'vitrine' ? '<span class="badge badge-role badge-vitrine">🖼️ Vitrine</span>' : s.role === 'checkout' ? '<span class="badge badge-role badge-checkout">🛒 Checkout</span>' : ''}
         <span class="sc-plat-name">${esc(platformLabel(s.platform))}</span>
       </div>
       <div class="sc-stats">
