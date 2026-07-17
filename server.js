@@ -2156,9 +2156,6 @@ function buildStorefrontScript(panelUrl, cfg) {
     if (TRIGGER === 'load') { resolverAgora().then(irPara); return; }
 
     // ----- modo "ao clicar em comprar" -----
-    var SELETOR = 'form[action*="/cart/add"] [type="submit"], form[action*="/cart/add"] [name="add"],'
-      + ' button[name="add"], .shopify-payment-button, .shopify-payment-button__button,'
-      + ' [data-shopify="payment-button"], [name="checkout"], a[href*="/checkout"], a[href*="/cart"]';
     var bypass = false;
 
     function bloquear(e) {
@@ -2183,9 +2180,66 @@ function buildStorefrontScript(panelUrl, cfg) {
       resolverAgora().then(function (u) { if (u) irPara(u); else refazerFn(); });
     }
 
+    /* (1) AGNÓSTICO DE TEMA: intercepta a REQUISIÇÃO de "adicionar ao carrinho".
+       A maioria dos temas usa AJAX com botões fora do <form>, com classes próprias —
+       pegar a requisição funciona em qualquer tema, sem depender de seletor. */
+    var _fetch = window.fetch;
+    if (_fetch) {
+      window.fetch = function (input, init) {
+        var args = arguments;
+        try {
+          var u = typeof input === 'string' ? input : (input && input.url) || '';
+          if (!bypass && /\\/cart\\/add/.test(u)) {
+            return resolverAgora().then(function (url) {
+              if (url) { irPara(url); return new Promise(function () {}); } // vai pro checkout
+              bypass = true;                                                 // sem par: adiciona normal
+              return _fetch.apply(window, args);
+            });
+          }
+        } catch (err) { /* ignora */ }
+        return _fetch.apply(this, args);
+      };
+    }
+    var _open = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (mth, url) {
+      try { if (/\\/cart\\/add/.test(String(url))) this.__compra = true; } catch (err) {}
+      return _open.apply(this, arguments);
+    };
+    var _send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function () {
+      var self = this, args = arguments;
+      if (self.__compra && !bypass) {
+        resolverAgora().then(function (url) {
+          if (url) irPara(url);
+          else { bypass = true; _send.apply(self, args); }
+        });
+        return;
+      }
+      return _send.apply(self, args);
+    };
+
+    /* (2) cliques: seletores comuns de vários temas + reconhecimento por texto */
+    var SELETOR = 'form[action*="/cart/add"] [type="submit"], form[action*="/cart/add"] [name="add"],'
+      + ' button[name="add"], [data-add-to-cart], [data-product-add], [id*="AddToCart"],'
+      + ' [class*="add-to-cart"], [class*="add_to_cart"], [class*="atc-"], [class*="-atc"],'
+      + ' [class*="product-form__submit"], [class*="product-atc"],'
+      + ' .shopify-payment-button, .shopify-payment-button__button, [data-shopify="payment-button"],'
+      + ' [name="checkout"], a[href*="/checkout"], a[href*="/cart"]';
+    var RE_COMPRA = /(add to cart|adicionar ao carrinho|comprar agora|comprar|buy it now|buy now|finalizar compra|finalizar pedido|checkout)/i;
+
+    function alvoDeCompra(t) {
+      if (!t || !t.closest) return null;
+      var el = null;
+      try { el = t.closest(SELETOR); } catch (err) { /* seletor exótico */ }
+      if (el) return el;
+      var b = t.closest('button, a, input[type="submit"]');
+      if (b && RE_COMPRA.test((b.textContent || b.value || '').trim())) return b;
+      return null;
+    }
+
     document.addEventListener('click', function (e) {
       if (bypass) return;
-      var el = e.target && e.target.closest ? e.target.closest(SELETOR) : null;
+      var el = alvoDeCompra(e.target);
       if (!el) return;
       bloquear(e);                                         // bloqueia SEMPRE primeiro (não escapa)
       decidir(function () { refazer(el); });
