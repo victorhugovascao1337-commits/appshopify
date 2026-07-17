@@ -975,6 +975,30 @@ textarea.panel-input { resize: vertical; }
 .tag-fast { color: var(--good); background: #fff; border: 1px solid var(--good-border); }
 .tag-prod { color: var(--accent); background: var(--accent-tint); border: 1px solid var(--border-accent); }
 
+/* tooltip "onde encontrar" por campo (o "?" ao lado do rótulo) */
+.help-tip { position: relative; display: inline-flex; vertical-align: middle; margin-left: 6px; }
+.help-tip .help-ico {
+  width: 16px; height: 16px; border-radius: 50%; cursor: help;
+  display: grid; place-items: center; font-size: 10.5px; font-weight: 700;
+  color: var(--text-muted); background: var(--accent-tint); border: 1px solid var(--border);
+}
+.help-tip:hover .help-ico, .help-tip:focus-within .help-ico { color: var(--accent); border-color: var(--border-accent); }
+.help-pop {
+  position: absolute; z-index: 50; left: 0; top: calc(100% + 8px);
+  width: 300px; max-width: 78vw; padding: 13px 15px;
+  background: var(--surface-solid); color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-pop);
+  font-size: 11.5px; line-height: 1.5; font-weight: 400;
+  opacity: 0; visibility: hidden; transform: translateY(-4px); transition: all 0.15s;
+  white-space: normal;
+}
+.help-tip:hover .help-pop, .help-tip:focus-within .help-pop { opacity: 1; visibility: visible; transform: translateY(0); }
+.help-pop strong { display: block; color: var(--text-primary); font-size: 12px; margin-bottom: 7px; }
+.help-pop ol { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 5px; }
+.help-pop code { font-family: Consolas, monospace; font-size: 10.5px; background: var(--accent-tint); color: var(--accent); padding: 1px 4px; border-radius: 4px; }
+.help-pop .pop-foot { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--grid); color: var(--text-muted); }
+@media (max-width: 560px) { .help-pop { right: 0; left: auto; } }
+
 .wiz-note {
   font-size: 12px; color: var(--text-secondary); line-height: 1.5;
   border: 1px solid var(--border-accent); background: var(--accent-soft);
@@ -987,6 +1011,9 @@ textarea.panel-input { resize: vertical; }
 .note-warn { border-color: var(--warn-border); background: var(--warn-tint); }
 .note-warn code { background: rgba(181, 71, 8, 0.12); color: var(--warn); }
 .note-warn #oauthToCustom { margin-top: 8px; font-size: 12px; }
+.note-accent { border-color: var(--border-accent); background: var(--accent-tint); }
+.wiz-next { margin: 4px 0 16px; }
+.wiz-next .wiz-note { margin-bottom: 0; }
 
 .wiz-field { display: block; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 14px; }
 .wiz-field .opt { color: var(--text-muted); font-weight: 400; }
@@ -1004,8 +1031,16 @@ textarea.panel-input { resize: vertical; }
   border: 1px solid var(--good-border); background: var(--good-tint);
   border-radius: 12px; padding: 13px 14px; margin-bottom: 16px;
 }
+details.scopes-box > summary { list-style: none; cursor: pointer; }
+details.scopes-box > summary::-webkit-details-marker { display: none; }
+.scopes-toggle { font-size: 11px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.06em; }
+details.scopes-box[open] .scopes-toggle::after { content: ' ▲'; }
+details.scopes-box:not([open]) .scopes-toggle::after { content: ' ▾'; }
 .scopes-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .scopes-head strong { font-size: 12.5px; color: var(--text-primary); }
+
+.wiz-tip-line { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 16px; }
+.wiz-tip-line .help-ico { display: inline-grid; place-items: center; width: 15px; height: 15px; border-radius: 50%; font-size: 10px; font-weight: 700; background: var(--accent-tint); color: var(--accent); border: 1px solid var(--border); vertical-align: middle; }
 .scope-list { list-style: none; display: flex; flex-direction: column; gap: 9px; }
 .scope-list li {
   display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 8px;

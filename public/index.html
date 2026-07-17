@@ -832,17 +832,15 @@
 
           <!-- form custom app -->
           <div class="mode-panel" data-mode-panel="custom">
-            <div class="wiz-note">
-              <strong>🔗 Antes de começar — 3 pontos que confundem</strong>
-              <p>Crie o app <strong>dentro do admin da própria loja</strong> (Apps → Develop apps) — funciona em qualquer loja, sem depender de organização.</p>
-              <p><strong>Domínio</strong> = o endereço <code>.myshopify.com</code> da loja (ex.: minhaloja.myshopify.com) — <strong>não</strong> o seu e-mail nem o domínio personalizado.</p>
-              <p>O token é o <strong>Admin API access token</strong> gerado ao instalar o app (API credentials → Install app). <strong>Não</strong> é a API key nem o secret.</p>
-            </div>
+            <p class="wiz-tip-line">Crie o app <strong>dentro do admin da própria loja</strong> (Apps → Desenvolver apps) — funciona em qualquer loja. Cada campo abaixo tem um <span class="help-ico" style="cursor:default">?</span> explicando onde achar.</p>
 
-            <!-- escopos necessários -->
-            <div class="scopes-box">
-              <div class="scopes-head">
-                <strong>🔑 Escopos do Admin API que você precisa marcar</strong>
+            <!-- escopos necessários (recolhível) -->
+            <details class="scopes-box">
+              <summary class="scopes-head">
+                <strong>🔑 Escopos que você precisa marcar no app</strong>
+                <span class="scopes-toggle">ver lista</span>
+              </summary>
+              <div class="scopes-head" style="border:0;padding:6px 0 12px"><span></span>
                 <button type="button" class="control sm" id="copyScopesBtn">Copiar lista</button>
               </div>
               <ul class="scope-list">
@@ -883,29 +881,20 @@
                 </li>
               </ul>
               <p class="scopes-foot">Os <code>unauthenticated_*</code> ficam em <strong>Storefront API</strong> (outra seção do app), não em Escopos do Admin API.<br>Marcou escopo depois de instalar? Salve, clique em <strong>Instalar app</strong> de novo e <strong>gere um token novo</strong> — o antigo não ganha as permissões.</p>
-            </div>
+            </details>
 
-            <label class="wiz-field">Domínio da loja
-              <input type="text" id="wizDomain" placeholder="minhaloja.myshopify.com" autocomplete="off">
-              <span class="wiz-hint">O endereço <code>.myshopify.com</code> da loja — não o seu e-mail.</span>
+            <label class="wiz-field">Domínio Shopify
+              <span class="help-tip" tabindex="0"><span class="help-ico">?</span><span class="help-pop"><strong>Onde encontrar: Domínio</strong>É o endereço <code>.myshopify.com</code> da loja (ex.: <code>minha-loja.myshopify.com</code>). No admin da Shopify aparece em <strong>Configurações → Domínios</strong>. <span class="pop-foot">Não é o seu e-mail nem o domínio personalizado.</span></span></span>
+              <input type="text" id="wizDomain" placeholder="minha-loja.myshopify.com" autocomplete="off">
             </label>
             <label class="wiz-field">Admin API access token 🔒
+              <span class="help-tip" tabindex="0"><span class="help-ico">?</span><span class="help-pop"><strong>Onde encontrar: Admin API token</strong><ol><li>No admin: <strong>Configurações → Apps e canais de vendas → Desenvolver apps</strong> (se for a 1ª vez, "Permitir desenvolvimento de apps").</li><li><strong>Criar um app</strong> (nome qualquer).</li><li>Em <strong>Configuração → Escopos do Admin API</strong>, marque os escopos (veja a lista acima) e salve.</li><li><strong>Credenciais da API → Instalar app</strong>.</li><li>Copie o <strong>Admin API access token</strong> (<code>shpat_…</code>) — só aparece uma vez.</li></ol></span></span>
               <input type="password" id="wizToken" placeholder="shpat_…" autocomplete="off">
-              <span class="wiz-hint">Validamos o token em tempo real antes de salvar. Criptografado no servidor.</span>
+              <span class="wiz-hint">Validado em tempo real e criptografado no servidor.</span>
             </label>
-            <label class="wiz-field">Nome interno <span class="opt">(opcional)</span>
-              <input type="text" id="wizName" placeholder="Ex.: Loja Magic BR" autocomplete="off">
+            <label class="wiz-field">Nome de exibição <span class="opt">(opcional)</span>
+              <input type="text" id="wizName" placeholder="Ex.: Minha Loja Principal" autocomplete="off">
             </label>
-            <details class="wiz-details">
-              <summary>▸ Como obter o token (1 minuto)</summary>
-              <ol class="wiz-help-list">
-                <li>No admin da loja: <strong>Configurações → Apps e canais de vendas → Desenvolver apps</strong> (se for a primeira vez, clique em "Permitir desenvolvimento de apps personalizados").</li>
-                <li><strong>Criar um app</strong> → dê um nome qualquer (ex.: "Painel").</li>
-                <li>Em <strong>Configuração → Escopos do Admin API</strong>, marque os escopos da lista acima e <strong>salve</strong>.</li>
-                <li>Vá em <strong>Credenciais da API → Instalar app</strong>.</li>
-                <li>Copie o <strong>token de acesso do Admin API</strong> (começa com <code>shpat_</code> — ele só aparece uma vez!) e cole aqui.</li>
-              </ol>
-            </details>
             <div class="wiz-status" id="wizStatus"></div>
           </div>
 
@@ -921,9 +910,12 @@
             </div>
 
             <!-- escopos necessários (OAuth) -->
-            <div class="scopes-box">
-              <div class="scopes-head">
+            <details class="scopes-box">
+              <summary class="scopes-head">
                 <strong>🔑 Escopos que o app precisa pedir</strong>
+                <span class="scopes-toggle">ver lista</span>
+              </summary>
+              <div class="scopes-head" style="border:0;padding:6px 0 4px"><span></span>
                 <button type="button" class="control sm" id="copyScopesOauthBtn">Copiar lista</button>
               </div>
               <p class="scopes-intro">No Partner App você <strong>não marca no admin da loja</strong>: declare os escopos no app (<strong>Partner Dashboard → App setup → Admin API access scopes</strong>, ou <code>scopes</code> no <code>shopify.app.toml</code>). Eles vão no parâmetro <code>scope</code> da URL de autorização e aparecem na tela de permissões que o lojista aceita.</p>
@@ -965,18 +957,19 @@
                 </li>
               </ul>
               <p class="scopes-foot">O painel já pede todos esses no OAuth. Os <code>unauthenticated_*</code> exigem a <strong>Storefront API habilitada</strong> no app.<br>Mudou os escopos com o app já instalado? O lojista precisa <strong>reautorizar</strong> (rode o OAuth de novo) — o token antigo mantém só as permissões antigas.</p>
-            </div>
+            </details>
 
-            <label class="wiz-field">Domínio da loja
-              <input type="text" id="oauthDomain" placeholder="minhaloja.myshopify.com" autocomplete="off">
-              <span class="wiz-hint">Você será redirecionado para o Shopify para autorizar as permissões.</span>
+            <label class="wiz-field">Domínio Shopify
+              <span class="help-tip" tabindex="0"><span class="help-ico">?</span><span class="help-pop"><strong>Onde encontrar: Domínio</strong>É o endereço <code>.myshopify.com</code> da loja. Você será redirecionado ao Shopify para autorizar. <span class="pop-foot">Não é o e-mail nem o domínio personalizado.</span></span></span>
+              <input type="text" id="oauthDomain" placeholder="minha-loja.myshopify.com" autocomplete="off">
             </label>
             <label class="wiz-field">Client ID <span class="opt">(API key do app)</span>
+              <span class="help-tip" tabindex="0"><span class="help-ico">?</span><span class="help-pop"><strong>Onde encontrar: Client ID</strong><ol><li>Em <strong>partners.shopify.com</strong> → seu app.</li><li><strong>App setup → Client credentials</strong> (ou "API key").</li><li>Copie o <strong>Client ID</strong>.</li></ol><span class="pop-foot">Fica salvo e reaproveitado nas próximas lojas.</span></span></span>
               <input type="text" id="oauthClientId" placeholder="ex.: 54c942a788f6b8…" autocomplete="off">
             </label>
-            <label class="wiz-field">Secret <span class="opt">(client secret do app)</span> 🔒
+            <label class="wiz-field">Client Secret <span class="opt">(secret do app)</span> 🔒
+              <span class="help-tip" tabindex="0"><span class="help-ico">?</span><span class="help-pop"><strong>Onde encontrar: Client Secret</strong><ol><li>Mesmo lugar do Client ID: <strong>App setup → Client credentials</strong>.</li><li>Copie o <strong>Client secret</strong>.</li></ol><span class="pop-foot">Criptografado no servidor. Você só cola uma vez.</span></span></span>
               <input type="password" id="oauthSecret" placeholder="shpss_…" autocomplete="off">
-              <span class="wiz-hint">Guardado criptografado no servidor e reaproveitado nas próximas lojas — você só precisa colar uma vez.</span>
             </label>
 
             <!-- URL que precisa estar cadastrada no Partner Dashboard -->
@@ -1007,6 +1000,7 @@
             <p class="wiz-sub" id="wizSuccessSub">—</p>
           </div>
           <dl class="wiz-review" id="wizReview"></dl>
+          <div class="wiz-next" id="wizNext"></div>
           <div class="wiz-actions">
             <button class="control btn-ghost" id="wizAddAnother">Conectar outra</button>
             <button class="control btn-primary" id="wizGoDetail">Ver loja ›</button>

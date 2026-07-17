@@ -2183,12 +2183,25 @@ async function wizConnectCustom(body, reconnect) {
 function showWizardSuccess(store) {
   gotoStep(3);
   $('wizSuccessSub').textContent = `${store.name} está pronta no seu painel.`;
+  const papel = lojas.wizardRole === 'vitrine' ? 'Vitrine' : 'Checkout';
   $('wizReview').innerHTML = `
     <div><dt>Loja</dt><dd>${esc(store.name)}</dd></div>
+    <div><dt>Papel</dt><dd>${papel}</dd></div>
     <div><dt>Domínio</dt><dd>${esc(store.domain)}</dd></div>
-    <div><dt>Plataforma</dt><dd>${esc(platformLabel(store.platform))}</dd></div>
-    <div><dt>Moeda</dt><dd>${esc(store.currency)}</dd></div>
-    <div><dt>Conexão</dt><dd>Custom App (Admin API)</dd></div>`;
+    <div><dt>Moeda</dt><dd>${esc(store.currency)}</dd></div>`;
+
+  // próximo passo conforme o papel
+  if (lojas.wizardRole === 'vitrine') {
+    $('wizNext').innerHTML = `<div class="wiz-note note-accent">
+      <strong>▶ Próximo passo: instalar o script na vitrine</strong>
+      <p>É o script que redireciona o cliente pro checkout. Vá em <strong>Flow → Redirect da vitrine</strong> e clique em <strong>“Instalar na vitrine”</strong> (precisa do escopo <code>write_script_tags</code>). Sem tocar no tema.</p>
+    </div>`;
+  } else {
+    $('wizNext').innerHTML = `<div class="wiz-note note-accent">
+      <strong>▶ Próximo passo: liberar o checkout direto (opcional)</strong>
+      <p>Para o carrinho já vir montado, cole o <strong>Token Storefront</strong> desta loja em <strong>Flow → Redirect → Destino do cliente</strong>. Sem ele, o cliente cai na página do produto — nada quebra.</p>
+    </div>`;
+  }
 }
 
 // copia os escopos obrigatórios (Custom App e OAuth)
