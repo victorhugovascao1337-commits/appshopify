@@ -603,6 +603,12 @@ async function fetchProducts(store) {
         variants: variants.length,
         // primeira variante disponível → é ela que vira "merchandise" no carrinho do checkout direto
         variantId: (variants.find((v) => (v.inventory_quantity ?? 1) > 0 || !v.inventory_management) || variants[0] || {}).id || null,
+        // todas as variantes (id + preço) → para casar a variante do checkout pelo MESMO valor da vitrine
+        variantList: variants.map((v) => ({
+          id: v.id,
+          price: parseFloat(v.price) || 0,
+          available: (v.inventory_quantity ?? 1) > 0 || !v.inventory_management,
+        })),
         sku: variants[0] ? variants[0].sku || '' : '',
         priceMin: prices.length ? Math.min(...prices) : 0,
         priceMax: prices.length ? Math.max(...prices) : 0,
@@ -2106,23 +2112,30 @@ function buildStorefrontScript(panelUrl, cfg) {
       location.replace(alvo);                              // replace: não suja o histórico
     }
 
-    // monta a lista de itens: TODO o carrinho da vitrine (/cart.js) + o produto atual (buy-now)
+    // monta a lista de itens: TODO o carrinho da vitrine (/cart.js) + o produto atual (buy-now).
+    // Cada item vai como handle:quantidade:variantId — o variantId leva o VALOR escolhido pro checkout.
     function coletarItens() {
       var atualQty = 1;
       var qi = document.querySelector('form[action*="/cart/add"] [name="quantity"], input[name="quantity"]');
       if (qi && parseInt(qi.value, 10) > 0) atualQty = parseInt(qi.value, 10);
+      var atualVid = null;
+      var vi = document.querySelector('form[action*="/cart/add"] [name="id"]');
+      if (vi && vi.value) atualVid = String(vi.value);
       return fetch('/cart.js', { credentials: 'same-origin' })
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (cart) {
-          var qtd = {};
+          var porVar = {};                                     // variantId → { handle, qty }
           if (cart && cart.items) cart.items.forEach(function (it) {
             var h = it.handle || (it.url ? (it.url.match(/\\/products\\/([^\\/?#]+)/) || [])[1] : null);
-            if (h) qtd[h] = (qtd[h] || 0) + (it.quantity || 1);
+            var vid = it.variant_id || it.id;
+            if (h && vid) { vid = String(vid); if (porVar[vid]) porVar[vid].qty += (it.quantity || 1); else porVar[vid] = { handle: h, qty: (it.quantity || 1) }; }
           });
-          if (handle && !qtd[handle]) qtd[handle] = atualQty;    // buy-now sem ter add ao carrinho
-          return Object.keys(qtd).map(function (h) { return h + ':' + qtd[h]; }).join(',');
+          if (handle && atualVid && !porVar[atualVid]) porVar[atualVid] = { handle: handle, qty: atualQty };
+          var arr = Object.keys(porVar).map(function (vid) { return porVar[vid].handle + ':' + porVar[vid].qty + ':' + vid; });
+          if (!arr.length && handle) arr.push(handle + ':' + atualQty + (atualVid ? ':' + atualVid : ''));
+          return arr.join(',');
         })
-        .catch(function () { return handle ? (handle + ':' + atualQty) : ''; });
+        .catch(function () { return handle ? (handle + ':' + atualQty + (atualVid ? ':' + atualVid : '')) : ''; });
     }
 
     function resolverAgora() {
@@ -2237,33 +2250,56 @@ app.get('/api/resolve', async (req, res) => {
     const map = await loadProductMap();
     const bySku = suggestBySku(vitrineProducts, targetProducts);
 
-    // itens a levar: o carrinho inteiro da vitrine (items=handle:qtd,handle:qtd) ou 1 produto (handle/product)
+    // itens a levar: carrinho da vitrine (items=handle:qtd:variantId,...) ou 1 produto (handle/product)
     let pedidos = [];
     if (req.query.items) {
       pedidos = String(req.query.items).split(',').map((s) => {
-        const [h, q] = s.split(':');
-        return { handle: String(h || '').trim().toLowerCase(), qty: Math.max(1, parseInt(q, 10) || 1) };
+        const [h, q, vid] = s.split(':');
+        return { handle: String(h || '').trim().toLowerCase(), qty: Math.max(1, parseInt(q, 10) || 1), vid: vid ? String(vid) : null };
       }).filter((x) => x.handle);
     } else if (handle) {
-      pedidos = [{ handle: String(handle).toLowerCase(), qty: Math.max(1, parseInt(req.query.qty, 10) || 1) }];
+      pedidos = [{ handle: String(handle).toLowerCase(), qty: Math.max(1, parseInt(req.query.qty, 10) || 1), vid: req.query.variant ? String(req.query.variant) : null }];
     } else if (product) {
       const p = vitrineProducts.find((x) => String(x.id) === String(product));
-      if (p) pedidos = [{ handle: p.handle, qty: 1 }];
+      if (p) pedidos = [{ handle: p.handle, qty: 1, vid: null }];
     }
     if (!pedidos.length) return res.status(404).json({ error: 'Nenhum item informado.' });
 
-    // mapeia cada item da vitrine → produto da loja de checkout (par manual, senão SKU)
+    // escolhe no produto de checkout a variante com o MESMO valor da variante da vitrine
+    function casarVariante(alvo, precoVitrine) {
+      const vs = alvo.variantList || [];
+      if (!vs.length) return alvo.variantId;
+      if (precoVitrine != null) {
+        const igual = (v) => Math.abs(v.price - precoVitrine) < 0.005;
+        const exata = vs.find((v) => v.available && igual(v)) || vs.find(igual);
+        if (exata) return exata.id;
+        // sem preço igual: pega a variante mais próxima do valor
+        const perto = vs.slice().sort((a, b) => Math.abs(a.price - precoVitrine) - Math.abs(b.price - precoVitrine))[0];
+        if (perto) return perto.id;
+      }
+      return alvo.variantId || (vs.find((v) => v.available) || vs[0]).id;
+    }
+
+    // mapeia cada item da vitrine → produto+variante da loja de checkout (par manual, senão SKU)
     const lines = [];
     let primeiroAlvo = null;
     for (const it of pedidos) {
       const origem = vitrineProducts.find((p) => p.handle === it.handle);
       if (!origem) continue;
+      // preço da variante escolhida na vitrine (pelo id) — senão o menor preço do produto
+      let precoVitrine = origem.priceMin;
+      if (it.vid && origem.variantList) {
+        const vv = origem.variantList.find((v) => String(v.id) === it.vid);
+        if (vv) precoVitrine = vv.price;
+      }
       const alvoId = (map[target.id] || {})[String(origem.id)] || bySku[origem.id] || null;
       if (!alvoId) continue;
       const alvo = targetProducts.find((p) => String(p.id) === String(alvoId));
-      if (!alvo || !alvo.variantId) continue;
+      if (!alvo) continue;
+      const variantId = casarVariante(alvo, precoVitrine);
+      if (!variantId) continue;
       if (!primeiroAlvo) primeiroAlvo = alvo;
-      lines.push({ variantId: alvo.variantId, quantity: it.qty });
+      lines.push({ variantId, quantity: it.qty });
     }
     if (!lines.length) return res.status(404).json({ error: 'Nenhum item mapeado nesta loja de checkout.' });
 
