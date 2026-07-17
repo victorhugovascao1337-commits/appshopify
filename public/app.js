@@ -2043,6 +2043,7 @@ function openWizard() {
   $('oauthDomain').value = '';
   $('oauthClientId').value = '';
   $('oauthSecret').value = '';
+  if ($('wizSfToken')) $('wizSfToken').value = '';
   setWizStatus('wizStatus', '', '');
   setWizStatus('oauthStatus', '', '');
 }
@@ -2068,6 +2069,8 @@ function setWizardMode(mode) {
 function setWizardRole(role) {
   lojas.wizardRole = role === 'vitrine' ? 'vitrine' : 'checkout';
   document.querySelectorAll('.role-opt').forEach((b) => b.classList.toggle('selected', b.dataset.role === lojas.wizardRole));
+  // campo Token Storefront só faz sentido no checkout (para o carrinho pronto)
+  if ($('wizSfBox')) $('wizSfBox').hidden = lojas.wizardRole !== 'checkout';
 }
 document.querySelectorAll('.role-opt').forEach((b) => b.addEventListener('click', () => setWizardRole(b.dataset.role)));
 
@@ -2133,7 +2136,7 @@ async function oauthStart() {
     const res = await fetch('/api/oauth/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ domain, clientId: $('oauthClientId').value.trim(), secret: $('oauthSecret').value.trim(), role: lojas.wizardRole }),
+      body: JSON.stringify({ domain, clientId: $('oauthClientId').value.trim(), secret: $('oauthSecret').value.trim(), role: lojas.wizardRole, storefrontToken: lojas.wizardRole === 'checkout' ? $('wizSfToken').value.trim() : '' }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Falha ao iniciar o OAuth.');
@@ -2150,7 +2153,8 @@ $('wizValidate').addEventListener('click', async () => {
   const token = $('wizToken').value.trim();
   const name = $('wizName').value.trim();
   if (!domain || !token) { setWizStatus('wizStatus', '✗ Informe o domínio e o token.', 'err'); return; }
-  await wizConnectCustom({ name, domain, token, role: lojas.wizardRole });
+  const storefrontToken = lojas.wizardRole === 'checkout' ? $('wizSfToken').value.trim() : '';
+  await wizConnectCustom({ name, domain, token, role: lojas.wizardRole, storefrontToken });
 });
 
 async function wizConnectCustom(body, reconnect) {
@@ -2172,6 +2176,7 @@ async function wizConnectCustom(body, reconnect) {
     }
     if (!res.ok) throw new Error(data.error || 'Falha ao conectar.');
     lojas.lastConnected = data.store;
+    lojas.lastSf = { submitted: !!body.storefrontToken, warning: data.sfWarning || null };
     setWizStatus('wizStatus', data.reconnected ? '✓ Token atualizado.' : '', data.reconnected ? 'ok' : '');
     showWizardSuccess(data.store);
     loadStores();
@@ -2197,10 +2202,14 @@ function showWizardSuccess(store) {
       <p>É o script que redireciona o cliente pro checkout. Vá em <strong>Flow → Redirect da vitrine</strong> e clique em <strong>“Instalar na vitrine”</strong> (precisa do escopo <code>write_script_tags</code>). Sem tocar no tema.</p>
     </div>`;
   } else {
-    $('wizNext').innerHTML = `<div class="wiz-note note-accent">
-      <strong>▶ Próximo passo: liberar o checkout direto (opcional)</strong>
-      <p>Para o carrinho já vir montado, cole o <strong>Token Storefront</strong> desta loja em <strong>Flow → Redirect → Destino do cliente</strong>. Sem ele, o cliente cai na página do produto — nada quebra.</p>
-    </div>`;
+    const sf = lojas.lastSf || {};
+    if (sf.submitted && !sf.warning) {
+      $('wizNext').innerHTML = `<div class="wiz-note note-accent"><strong>✓ Token Storefront salvo</strong><p>Checkout direto liberado — o carrinho já vem montado nesta loja.</p></div>`;
+    } else if (sf.submitted && sf.warning) {
+      $('wizNext').innerHTML = `<div class="wiz-note note-warn"><strong>⚠ Loja conectada, mas o Token Storefront falhou</strong><p>${esc(sf.warning)}</p><p>Você pode colar de novo em <strong>Flow → Redirect → Destino do cliente</strong>. Sem ele, o cliente cai na página do produto.</p></div>`;
+    } else {
+      $('wizNext').innerHTML = `<div class="wiz-note note-accent"><strong>▶ Próximo passo: liberar o checkout direto (opcional)</strong><p>Para o carrinho já vir montado, cole o <strong>Token Storefront</strong> desta loja em <strong>Flow → Redirect → Destino do cliente</strong>. Sem ele, o cliente cai na página do produto — nada quebra.</p></div>`;
+    }
   }
 }
 

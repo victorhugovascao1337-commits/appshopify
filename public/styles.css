@@ -1014,6 +1014,8 @@ textarea.panel-input { resize: vertical; }
 .note-accent { border-color: var(--border-accent); background: var(--accent-tint); }
 .wiz-next { margin: 4px 0 16px; }
 .wiz-next .wiz-note { margin-bottom: 0; }
+.wiz-sf-box { border-top: 1px dashed var(--border); padding-top: 16px; margin-top: 4px; margin-bottom: 16px; }
+.wiz-sf-box .wiz-field { margin-bottom: 6px; }
 
 .wiz-field { display: block; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 14px; }
 .wiz-field .opt { color: var(--text-muted); font-weight: 400; }

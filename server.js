@@ -517,12 +517,21 @@ app.post('/api/stores', async (req, res) => {
   cache.clear();
 
   // papel escolhido no assistente: 'vitrine' ou 'checkout' (padrão: checkout)
+  const role = req.body.role === 'vitrine' ? 'vitrine' : 'checkout';
   try {
-    const role = req.body.role === 'vitrine' ? 'vitrine' : 'checkout';
     await applyStoreRole(store.id, role);
   } catch { /* o painel funciona mesmo se o flow ainda não estiver configurado */ }
 
-  res.json({ store: publicStore(store) });
+  // token Storefront colado já na conexão (checkout direto) — não-fatal
+  let sfWarning = null;
+  if (role === 'checkout' && req.body.storefrontToken) {
+    try {
+      const r = await validateAndSaveSfToken(store, req.body.storefrontToken);
+      if (!r.ok) sfWarning = r.error;
+    } catch (e) { sfWarning = e.message; }
+  }
+
+  res.json({ store: publicStore(store), sfWarning });
 });
 
 app.delete('/api/stores/:id', async (req, res) => {
@@ -1775,10 +1784,18 @@ app.post('/api/oauth/start', async (req, res) => {
       return res.status(400).json({ error: 'Informe o Client ID e o Secret do app (Partner Dashboard → App setup).' });
     }
 
+    const role = (req.body || {}).role === 'vitrine' ? 'vitrine' : 'checkout';
+    // token Storefront colado no assistente: guarda pendente por loja (a loja só existe após o callback)
+    const sfPending = (await db.readDoc('sf_pending', {})) || {};
+    if (role === 'checkout' && (req.body || {}).storefrontToken) {
+      sfPending[shop] = String(req.body.storefrontToken).trim();
+    } else { delete sfPending[shop]; }
+    await db.writeDoc('sf_pending', sfPending);
+
     const url = `https://${shop}/admin/oauth/authorize?client_id=${encodeURIComponent(clientId)}` +
       `&scope=${encodeURIComponent(OAUTH_SCOPES)}` +
       `&redirect_uri=${encodeURIComponent(oauthRedirectUri(req))}` +
-      `&state=${encodeURIComponent(makeState(shop, (req.body || {}).role === 'vitrine' ? 'vitrine' : 'checkout'))}`;
+      `&state=${encodeURIComponent(makeState(shop, role))}`;
     res.json({ ok: true, url, redirectUri: oauthRedirectUri(req) });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1868,6 +1885,16 @@ app.get('/api/oauth/callback', async (req, res) => {
       await applyStoreRole(store.id, st.role === 'vitrine' ? 'vitrine' : 'checkout');
     } catch { /* não impede a conexão */ }
 
+    // token Storefront que ficou pendente do assistente (checkout direto)
+    try {
+      const sfPending = (await db.readDoc('sf_pending', {})) || {};
+      if (sfPending[shop]) {
+        await validateAndSaveSfToken(store, sfPending[shop]);
+        delete sfPending[shop];
+        await db.writeDoc('sf_pending', sfPending);
+      }
+    } catch { /* não impede a conexão */ }
+
     res.redirect(`/?conectada=${encodeURIComponent(name)}`);
   } catch (e) {
     falha(e.message);
@@ -1927,6 +1954,34 @@ async function saveSfToken(storeId, token) {
   const all = await loadSfTokens();
   all[storeId] = token;
   await db.writeDoc('storefront_tokens', all);
+}
+
+// valida um token Storefront contra a própria loja e salva. Retorna { ok, shop, error }.
+async function validateAndSaveSfToken(store, token) {
+  token = String(token || '').trim();
+  if (!token) {
+    const all = await loadSfTokens();
+    if (all[store.id]) { delete all[store.id]; await db.writeDoc('storefront_tokens', all); }
+    return { ok: true, removed: true };
+  }
+  let r;
+  try {
+    r = await fetch(`https://${store.domain}/api/${API_VERSION}/graphql.json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Shopify-Storefront-Access-Token': token },
+      body: JSON.stringify({ query: '{ shop { name } }' }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch { return { ok: false, error: `Sem resposta de ${store.domain} ao validar o token (rede/timeout).` }; }
+  const txt = await r.text().catch(() => '');
+  if (r.status === 401 || r.status === 403) {
+    return { ok: false, error: 'A loja recusou esse token Storefront (401/403). Confira se copiou o "public access token" do canal Headless da loja de checkout.' };
+  }
+  if (!r.ok) return { ok: false, error: `A loja respondeu ${r.status} ao validar o token. ${txt.slice(0, 120)}` };
+  let j; try { j = JSON.parse(txt); } catch { j = null; }
+  if (!j || j.errors || !(j.data && j.data.shop)) return { ok: false, error: 'Token Storefront inválido para esta loja.' };
+  await saveSfToken(store.id, token);
+  return { ok: true, shop: j.data.shop.name };
 }
 
 // devolve (criando se preciso) o Storefront access token da loja. Exige os escopos unauthenticated_*.
@@ -2262,33 +2317,9 @@ app.post('/api/stores/:id/storefront-token', async (req, res) => {
   try {
     const store = (await loadStores()).find((s) => s.id === req.params.id);
     if (!store) return res.status(404).json({ error: 'Loja não encontrada.' });
-    const token = String((req.body || {}).token || '').trim();
-
-    // vazio → remover
-    if (!token) {
-      const all = await loadSfTokens();
-      if (all[store.id]) { delete all[store.id]; await db.writeDoc('storefront_tokens', all); }
-      return res.json({ ok: true, removed: true });
-    }
-
-    // valida contra a própria loja antes de salvar
-    const r = await fetch(`https://${store.domain}/api/${API_VERSION}/graphql.json`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Shopify-Storefront-Access-Token': token },
-      body: JSON.stringify({ query: '{ shop { name } }' }),
-    });
-    const txt = await r.text().catch(() => '');
-    if (r.status === 401 || r.status === 403) {
-      return res.status(400).json({ error: 'A loja recusou esse token Storefront (401/403). Confira se copiou o "public access token" do canal Headless da loja de checkout.' });
-    }
-    if (!r.ok) return res.status(400).json({ error: `A loja respondeu ${r.status} ao validar o token. ${txt.slice(0, 120)}` });
-    let j; try { j = JSON.parse(txt); } catch { j = null; }
-    if (!j || j.errors || !(j.data && j.data.shop)) {
-      return res.status(400).json({ error: 'Token Storefront inválido para esta loja.' });
-    }
-
-    await saveSfToken(store.id, token);
-    res.json({ ok: true, shop: j.data.shop.name });
+    const r = await validateAndSaveSfToken(store, (req.body || {}).token);
+    if (!r.ok) return res.status(400).json({ error: r.error });
+    res.json(r);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
