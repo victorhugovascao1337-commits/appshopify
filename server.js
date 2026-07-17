@@ -2048,17 +2048,23 @@ async function storefrontRequest(store, query, variables) {
 }
 
 // monta o carrinho com a variante e devolve o checkoutUrl (pagamento direto)
-async function buildCheckoutUrl(store, variantId) {
-  if (!variantId) throw new Error('Produto de destino sem variante para o carrinho.');
+// monta o carrinho com VÁRIAS linhas [{variantId, quantity}] e devolve o checkoutUrl
+async function buildCheckoutUrlLines(store, lines) {
+  const clean = (lines || []).filter((l) => l && l.variantId).map((l) => ({
+    merchandiseId: `gid://shopify/ProductVariant/${l.variantId}`,
+    quantity: Math.max(1, parseInt(l.quantity, 10) || 1),
+  }));
+  if (!clean.length) throw new Error('Nenhum produto com variante para o carrinho.');
   const q = 'mutation cc($lines:[CartLineInput!]!){cartCreate(input:{lines:$lines}){cart{checkoutUrl} userErrors{field message}}}';
-  const data = await storefrontRequest(store, q, {
-    lines: [{ merchandiseId: `gid://shopify/ProductVariant/${variantId}`, quantity: 1 }],
-  });
+  const data = await storefrontRequest(store, q, { lines: clean });
   const ue = (data.cartCreate && data.cartCreate.userErrors) || [];
   if (ue.length) throw new Error(ue[0].message);
   const url = data.cartCreate && data.cartCreate.cart && data.cartCreate.cart.checkoutUrl;
   if (!url) throw new Error('A Storefront API não devolveu o checkoutUrl.');
   return url;
+}
+async function buildCheckoutUrl(store, variantId) {
+  return buildCheckoutUrlLines(store, [{ variantId, quantity: 1 }]);
 }
 
 /* ---------- 1. o script que roda na loja do cliente ---------- */
@@ -2078,8 +2084,9 @@ function buildStorefrontScript(panelUrl, cfg) {
     if (/\\/admin/.test(location.pathname)) return;
 
     var m = location.pathname.match(/\\/products\\/([^\\/?#]+)/);
-    if (!m) return;                                       // só em página de produto
-    var handle = m[1];
+    var handle = m ? m[1] : null;
+    var ehCarrinho = /\\/cart/.test(location.pathname);
+    if (!handle && !ehCarrinho) return;                   // só em página de produto ou carrinho
 
     var qs = new URLSearchParams(location.search);
     if (qs.get('noredirect') === '1') return;             // atalho para você testar a vitrine
@@ -2099,24 +2106,42 @@ function buildStorefrontScript(panelUrl, cfg) {
       location.replace(alvo);                              // replace: não suja o histórico
     }
 
-    var RESOLVE = PANEL + '/api/resolve?shop=' + encodeURIComponent(Shopify.shop) + '&handle=' + encodeURIComponent(handle);
-    function resolverAgora() {
-      return fetch(RESOLVE, { credentials: 'omit' })
+    // monta a lista de itens: TODO o carrinho da vitrine (/cart.js) + o produto atual (buy-now)
+    function coletarItens() {
+      var atualQty = 1;
+      var qi = document.querySelector('form[action*="/cart/add"] [name="quantity"], input[name="quantity"]');
+      if (qi && parseInt(qi.value, 10) > 0) atualQty = parseInt(qi.value, 10);
+      return fetch('/cart.js', { credentials: 'same-origin' })
         .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (d) { return (d && d.url) ? d.url : null; })
-        .catch(function () { return null; });
+        .then(function (cart) {
+          var qtd = {};
+          if (cart && cart.items) cart.items.forEach(function (it) {
+            var h = it.handle || (it.url ? (it.url.match(/\\/products\\/([^\\/?#]+)/) || [])[1] : null);
+            if (h) qtd[h] = (qtd[h] || 0) + (it.quantity || 1);
+          });
+          if (handle && !qtd[handle]) qtd[handle] = atualQty;    // buy-now sem ter add ao carrinho
+          return Object.keys(qtd).map(function (h) { return h + ':' + qtd[h]; }).join(',');
+        })
+        .catch(function () { return handle ? (handle + ':' + atualQty) : ''; });
     }
 
-    // busca o destino já ao abrir a página (fica pronto pro clique)
-    var alvoUrl = null, resolvido = false;
-    var pendente = resolverAgora().then(function (u) { alvoUrl = u; resolvido = true; });
+    function resolverAgora() {
+      return coletarItens().then(function (items) {
+        if (!items) return null;                             // carrinho vazio e fora de produto
+        var u = PANEL + '/api/resolve?shop=' + encodeURIComponent(Shopify.shop) + '&items=' + encodeURIComponent(items);
+        return fetch(u, { credentials: 'omit' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) { return (d && d.url) ? d.url : null; })
+          .catch(function () { return null; });
+      });
+    }
 
-    if (TRIGGER === 'load') { pendente.then(function () { irPara(alvoUrl); }); return; }
+    if (TRIGGER === 'load') { resolverAgora().then(irPara); return; }
 
     // ----- modo "ao clicar em comprar" -----
     var SELETOR = 'form[action*="/cart/add"] [type="submit"], form[action*="/cart/add"] [name="add"],'
       + ' button[name="add"], .shopify-payment-button, .shopify-payment-button__button,'
-      + ' [data-shopify="payment-button"], a[href*="/checkout"], a[href*="/cart"]';
+      + ' [data-shopify="payment-button"], [name="checkout"], a[href*="/checkout"], a[href*="/cart"]';
     var bypass = false;
 
     function bloquear(e) {
@@ -2125,24 +2150,20 @@ function buildStorefrontScript(panelUrl, cfg) {
       if (e.stopImmediatePropagation) e.stopImmediatePropagation();
     }
 
-    function refazer(el) {                                  // produto SEM par: refaz a compra normal da loja
+    function refazer(el) {                                  // nada mapeado: refaz a compra normal da loja
       bypass = true;
       try {
         if (el.tagName === 'A' && el.href) { location.href = el.href; return; }
-        var form = el.closest ? el.closest('form[action*="/cart/add"]') : null;
+        var form = el.closest ? el.closest('form') : null;
         if (form) { if (form.requestSubmit) form.requestSubmit(); else form.submit(); return; }
         el.click();
       } catch (err) { try { el.click(); } catch (e2) {} }
     }
 
-    // CHAVE PRO 100%: no clique de compra, bloqueia PRIMEIRO. Se o destino ainda
-    // não chegou, espera — assim nunca escapa pro checkout da vitrine.
-    // decide o destino no momento do clique. Se já sabemos → instantâneo.
-    // Se não (load lento/falhou) → bloqueia e resolve de novo antes de liberar.
+    // CHAVE PRO 100%: bloqueia PRIMEIRO, depois resolve o carrinho INTEIRO (fresco)
+    // e só então redireciona — assim leva todos os itens e nunca escapa pro checkout da vitrine.
     function decidir(refazerFn) {
-      if (alvoUrl) { irPara(alvoUrl); return; }            // pronto e mapeado
-      var p = resolvido ? resolverAgora() : pendente.then(function () { return alvoUrl; });
-      p.then(function (u) { if (u) irPara(u); else refazerFn(); });
+      resolverAgora().then(function (u) { if (u) irPara(u); else refazerFn(); });
     }
 
     document.addEventListener('click', function (e) {
@@ -2153,10 +2174,10 @@ function buildStorefrontScript(panelUrl, cfg) {
       decidir(function () { refazer(el); });
     }, true);
 
-    document.addEventListener('submit', function (e) {     // "adicionar ao carrinho" via <form>
+    document.addEventListener('submit', function (e) {     // add-to-cart e checkout via <form>
       if (bypass) return;
-      if (!(e.target && e.target.matches && e.target.matches('form[action*="/cart/add"]'))) return;
       var form = e.target;
+      if (!(form && form.matches && (form.matches('form[action*="/cart/add"]') || form.matches('form[action^="/cart"]') || form.matches('form[action*="/checkout"]')))) return;
       bloquear(e);
       decidir(function () { bypass = true; if (form.requestSubmit) form.requestSubmit(); else form.submit(); });
     }, true);
@@ -2209,37 +2230,54 @@ app.get('/api/resolve', async (req, res) => {
     }
     if (!target) return res.status(404).json({ error: 'Nenhuma loja de checkout disponível.' });
 
-    // acha o produto da vitrine (por handle ou id)
     const vitrineStore = stores.find((s) => s.id === f.vitrineId);
     if (!vitrineStore) return res.status(404).json({ error: 'Vitrine não configurada.' });
     const vitrineProducts = await cached(`products:${vitrineStore.id}`, 60000, () => fetchProducts(vitrineStore));
-    const origem = handle
-      ? vitrineProducts.find((p) => p.handle === String(handle).toLowerCase())
-      : vitrineProducts.find((p) => String(p.id) === String(product));
-    if (!origem) return res.status(404).json({ error: 'Produto não encontrado na vitrine.' });
-
-    // par manual escolhido no painel; se não houver, tenta pelo SKU
-    const map = await loadProductMap();
-    let alvoId = (map[target.id] || {})[String(origem.id)] || null;
     const targetProducts = await cached(`products:${target.id}`, 60000, () => fetchProducts(target));
-    if (!alvoId) alvoId = suggestBySku(vitrineProducts, targetProducts)[origem.id] || null;
-    if (!alvoId) return res.status(404).json({ error: 'Esse produto não está mapeado nesta loja de checkout.' });
+    const map = await loadProductMap();
+    const bySku = suggestBySku(vitrineProducts, targetProducts);
 
-    const alvo = targetProducts.find((p) => String(p.id) === String(alvoId));
-    if (!alvo) return res.status(404).json({ error: 'O produto de destino não existe mais.' });
+    // itens a levar: o carrinho inteiro da vitrine (items=handle:qtd,handle:qtd) ou 1 produto (handle/product)
+    let pedidos = [];
+    if (req.query.items) {
+      pedidos = String(req.query.items).split(',').map((s) => {
+        const [h, q] = s.split(':');
+        return { handle: String(h || '').trim().toLowerCase(), qty: Math.max(1, parseInt(q, 10) || 1) };
+      }).filter((x) => x.handle);
+    } else if (handle) {
+      pedidos = [{ handle: String(handle).toLowerCase(), qty: Math.max(1, parseInt(req.query.qty, 10) || 1) }];
+    } else if (product) {
+      const p = vitrineProducts.find((x) => String(x.id) === String(product));
+      if (p) pedidos = [{ handle: p.handle, qty: 1 }];
+    }
+    if (!pedidos.length) return res.status(404).json({ error: 'Nenhum item informado.' });
 
-    const productUrl = `https://${target.domain}/products/${alvo.handle}`;
+    // mapeia cada item da vitrine → produto da loja de checkout (par manual, senão SKU)
+    const lines = [];
+    let primeiroAlvo = null;
+    for (const it of pedidos) {
+      const origem = vitrineProducts.find((p) => p.handle === it.handle);
+      if (!origem) continue;
+      const alvoId = (map[target.id] || {})[String(origem.id)] || bySku[origem.id] || null;
+      if (!alvoId) continue;
+      const alvo = targetProducts.find((p) => String(p.id) === String(alvoId));
+      if (!alvo || !alvo.variantId) continue;
+      if (!primeiroAlvo) primeiroAlvo = alvo;
+      lines.push({ variantId: alvo.variantId, quantity: it.qty });
+    }
+    if (!lines.length) return res.status(404).json({ error: 'Nenhum item mapeado nesta loja de checkout.' });
+
+    const productUrl = `https://${target.domain}/products/${primeiroAlvo.handle}`;
     let url = productUrl;
     let via = 'product';
     let warning = null;
 
-    // checkout direto: monta o carrinho na loja de checkout e manda para o pagamento
+    // checkout direto: monta o carrinho (com TODOS os itens) e manda pro pagamento
     if (cfg.destination === 'checkout') {
       try {
-        url = await buildCheckoutUrl(target, alvo.variantId);
+        url = await buildCheckoutUrlLines(target, lines);
         via = 'checkout';
       } catch (e) {
-        // nunca deixa o cliente na mão: cai para a página do produto e avisa o painel
         via = 'product-fallback';
         warning = e.message;
       }
@@ -2249,8 +2287,9 @@ app.get('/api/resolve', async (req, res) => {
       ok: true,
       via,
       warning,
+      itens: lines.length,
       loja: { id: target.id, name: target.name, domain: target.domain },
-      produto: { id: alvo.id, title: alvo.title, handle: alvo.handle },
+      produto: { id: primeiroAlvo.id, title: primeiroAlvo.title, handle: primeiroAlvo.handle },
       productUrl,
       url,
     });
