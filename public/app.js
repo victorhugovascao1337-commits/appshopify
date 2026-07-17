@@ -1222,6 +1222,7 @@ function scRender(d) {
   $('scMode').value = c.mode || 'ads';
   $('scKeep').checked = c.keepParams !== false;
   $('scDestination').value = c.destination === 'product' ? 'product' : 'checkout';
+  $('scTrigger').value = c.trigger === 'load' ? 'load' : 'click';
   $('scSrc').textContent = d.src || '—';
   $('scVitrine').textContent = d.vitrine ? d.vitrine.name : 'vitrine';
   scRenderCheckout(d.config);
@@ -1351,7 +1352,7 @@ async function scSaveConfig() {
   try {
     const res = await fetch('/api/script/config', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: $('scEnabled').checked, mode: $('scMode').value, keepParams: $('scKeep').checked, destination: $('scDestination').value }),
+      body: JSON.stringify({ enabled: $('scEnabled').checked, mode: $('scMode').value, keepParams: $('scKeep').checked, destination: $('scDestination').value, trigger: $('scTrigger').value }),
     });
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'Falha ao salvar.');
@@ -1612,6 +1613,7 @@ $('scEnabled').addEventListener('change', scSaveConfig);
 $('scMode').addEventListener('change', scSaveConfig);
 $('scKeep').addEventListener('change', scSaveConfig);
 $('scDestination').addEventListener('change', scSaveConfig);
+$('scTrigger').addEventListener('change', scSaveConfig);
 $('scInstallBtn').addEventListener('click', () => scInstall(false));
 $('scRemoveBtn').addEventListener('click', () => scInstall(true));
 

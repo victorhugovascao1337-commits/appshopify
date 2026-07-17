@@ -14,6 +14,15 @@ const db = require('./db');
 const PORT = process.env.PORT || 3030;
 const API_VERSION = '2025-01';
 const MAX_PAGES_PER_STORE = 10; // 250 pedidos/página → até 2.500 pedidos por loja/consulta
+const FETCH_TIMEOUT_MS = 15000; // corta chamadas à Shopify que travam (evita pendurar/derrubar)
+
+// Uma loja lenta/offline não pode derrubar o servidor inteiro: registra e segue.
+process.on('unhandledRejection', (err) => {
+  console.error('unhandledRejection:', err && err.message ? err.message : err);
+});
+process.on('uncaughtException', (err) => {
+  console.error('uncaughtException:', err && err.message ? err.message : err);
+});
 
 const app = express();
 app.use(express.json());
@@ -144,14 +153,23 @@ async function shopifyRequest(store, endpoint, { method = 'GET', body = null } =
   const url = endpoint.startsWith('https://')
     ? endpoint
     : `https://${store.domain}/admin/api/${API_VERSION}/${endpoint}`;
-  const res = await fetch(url, {
-    method,
-    headers: {
-      'X-Shopify-Access-Token': store.token,
-      'Content-Type': 'application/json',
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: {
+        'X-Shopify-Access-Token': store.token,
+        'Content-Type': 'application/json',
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch (e) {
+    // timeout/rede: vira erro tratável (não derruba o processo)
+    const err = new Error(`Sem resposta de ${store.domain} (rede/timeout).`);
+    err.status = 0;
+    throw err;
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     let msg = text.slice(0, 300);
@@ -1859,7 +1877,9 @@ app.get('/api/oauth/callback', async (req, res) => {
 
 // destination: 'checkout' = monta o carrinho na loja de checkout e joga direto no pagamento (Storefront API);
 //              'product'  = leva para a página do produto na loja de checkout.
-const REDIRECT_DEFAULTS = { enabled: false, mode: 'ads', keepParams: true, destination: 'checkout' };
+// trigger: 'click' = só redireciona quando o cliente clica em comprar/adicionar ao carrinho;
+//          'load'  = redireciona assim que a página do produto abre.
+const REDIRECT_DEFAULTS = { enabled: false, mode: 'ads', keepParams: true, destination: 'checkout', trigger: 'click' };
 
 async function loadRedirectConfig() {
   return { ...REDIRECT_DEFAULTS, ...((await db.readDoc('redirect', {})) || {}) };
@@ -1927,11 +1947,17 @@ async function ensureStorefrontToken(store) {
 
 async function storefrontRequest(store, query, variables) {
   const token = await ensureStorefrontToken(store);
-  const res = await fetch(`https://${store.domain}/api/${API_VERSION}/graphql.json`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Shopify-Storefront-Access-Token': token },
-    body: JSON.stringify({ query, variables }),
-  });
+  let res;
+  try {
+    res = await fetch(`https://${store.domain}/api/${API_VERSION}/graphql.json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Shopify-Storefront-Access-Token': token },
+      body: JSON.stringify({ query, variables }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch (e) {
+    throw new Error(`Sem resposta da Storefront de ${store.domain} (rede/timeout).`);
+  }
   const text = await res.text().catch(() => '');
   if (!res.ok) {
     const err = new Error(`Storefront ${res.status} em ${store.domain}: ${text.slice(0, 200)}`);
@@ -1967,6 +1993,7 @@ function buildStorefrontScript(panelUrl, cfg) {
   var PANEL = ${JSON.stringify(panelUrl)};
   var MODE = ${JSON.stringify(cfg.mode)};
   var KEEP = ${JSON.stringify(!!cfg.keepParams)};
+  var TRIGGER = ${JSON.stringify(cfg.trigger === 'load' ? 'load' : 'click')};
 
   try {
     if (!window.Shopify || !window.Shopify.shop) return;
@@ -1987,18 +2014,51 @@ function buildStorefrontScript(panelUrl, cfg) {
       if (!veioDeAnuncio) return;
     }
 
+    function irPara(alvo) {
+      if (!alvo) return;
+      if (KEEP && location.search) {                       // leva utm/fbclid para a outra loja
+        alvo += (alvo.indexOf('?') === -1 ? '?' : '&') + location.search.slice(1);
+      }
+      location.replace(alvo);                              // replace: não suja o histórico
+    }
+
+    // já busca o destino ao abrir (pra o clique redirecionar instantâneo)
+    var alvoUrl = null;
     var url = PANEL + '/api/resolve?shop=' + encodeURIComponent(Shopify.shop) + '&handle=' + encodeURIComponent(handle);
     fetch(url, { credentials: 'omit' })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
-        if (!d || !d.url) return;                          // sem par mapeado: fica na vitrine
-        var alvo = d.url;
-        if (KEEP && location.search) {                     // leva utm/fbclid para a outra loja
-          alvo += (alvo.indexOf('?') === -1 ? '?' : '&') + location.search.slice(1);
-        }
-        location.replace(alvo);                            // replace: não suja o histórico
+        alvoUrl = (d && d.url) ? d.url : null;             // sem par mapeado: fica null → loja normal
+        if (TRIGGER === 'load') irPara(alvoUrl);
       })
       .catch(function () { /* painel fora do ar: o cliente segue na vitrine */ });
+
+    if (TRIGGER === 'load') return;                        // modo "ao abrir": nada mais a fazer
+
+    // modo "ao clicar em comprar": intercepta os botões de compra do produto
+    var SELETOR_COMPRA = 'form[action*="/cart/add"] [type="submit"], form[action*="/cart/add"] [name="add"],'
+      + ' button[name="add"], .shopify-payment-button, .shopify-payment-button__button,'
+      + ' [data-shopify="payment-button"], a[href*="/checkout"], a[href*="/cart"]';
+
+    document.addEventListener('click', function (e) {
+      if (!alvoUrl) return;                                // sem par: deixa a compra normal seguir
+      var alvoEl = e.target && e.target.closest ? e.target.closest(SELETOR_COMPRA) : null;
+      if (!alvoEl) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+      irPara(alvoUrl);
+    }, true);
+
+    // "adicionar ao carrinho" costuma submeter um <form action="/cart/add">
+    document.addEventListener('submit', function (e) {
+      if (!alvoUrl) return;
+      if (e.target && e.target.matches && e.target.matches('form[action*="/cart/add"]')) {
+        e.preventDefault();
+        e.stopPropagation();
+        irPara(alvoUrl);
+      }
+    }, true);
   } catch (e) { /* nunca quebra a loja do cliente */ }
 })();`;
 }
@@ -2130,11 +2190,12 @@ app.get('/api/script/status', async (req, res) => {
 
 app.put('/api/script/config', async (req, res) => {
   const cfg = await loadRedirectConfig();
-  const { enabled, mode, keepParams, destination } = req.body || {};
+  const { enabled, mode, keepParams, destination, trigger } = req.body || {};
   if (typeof enabled === 'boolean') cfg.enabled = enabled;
   if (['ads', 'always'].includes(mode)) cfg.mode = mode;
   if (typeof keepParams === 'boolean') cfg.keepParams = keepParams;
   if (['checkout', 'product'].includes(destination)) cfg.destination = destination;
+  if (['click', 'load'].includes(trigger)) cfg.trigger = trigger;
   await saveRedirectConfig(cfg);
   res.json({ ok: true, config: cfg });
 });
