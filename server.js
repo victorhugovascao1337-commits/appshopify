@@ -2022,42 +2022,66 @@ function buildStorefrontScript(panelUrl, cfg) {
       location.replace(alvo);                              // replace: não suja o histórico
     }
 
-    // já busca o destino ao abrir (pra o clique redirecionar instantâneo)
-    var alvoUrl = null;
-    var url = PANEL + '/api/resolve?shop=' + encodeURIComponent(Shopify.shop) + '&handle=' + encodeURIComponent(handle);
-    fetch(url, { credentials: 'omit' })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (d) {
-        alvoUrl = (d && d.url) ? d.url : null;             // sem par mapeado: fica null → loja normal
-        if (TRIGGER === 'load') irPara(alvoUrl);
-      })
-      .catch(function () { /* painel fora do ar: o cliente segue na vitrine */ });
+    var RESOLVE = PANEL + '/api/resolve?shop=' + encodeURIComponent(Shopify.shop) + '&handle=' + encodeURIComponent(handle);
+    function resolverAgora() {
+      return fetch(RESOLVE, { credentials: 'omit' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { return (d && d.url) ? d.url : null; })
+        .catch(function () { return null; });
+    }
 
-    if (TRIGGER === 'load') return;                        // modo "ao abrir": nada mais a fazer
+    // busca o destino já ao abrir a página (fica pronto pro clique)
+    var alvoUrl = null, resolvido = false;
+    var pendente = resolverAgora().then(function (u) { alvoUrl = u; resolvido = true; });
 
-    // modo "ao clicar em comprar": intercepta os botões de compra do produto
-    var SELETOR_COMPRA = 'form[action*="/cart/add"] [type="submit"], form[action*="/cart/add"] [name="add"],'
+    if (TRIGGER === 'load') { pendente.then(function () { irPara(alvoUrl); }); return; }
+
+    // ----- modo "ao clicar em comprar" -----
+    var SELETOR = 'form[action*="/cart/add"] [type="submit"], form[action*="/cart/add"] [name="add"],'
       + ' button[name="add"], .shopify-payment-button, .shopify-payment-button__button,'
       + ' [data-shopify="payment-button"], a[href*="/checkout"], a[href*="/cart"]';
+    var bypass = false;
 
-    document.addEventListener('click', function (e) {
-      if (!alvoUrl) return;                                // sem par: deixa a compra normal seguir
-      var alvoEl = e.target && e.target.closest ? e.target.closest(SELETOR_COMPRA) : null;
-      if (!alvoEl) return;
+    function bloquear(e) {
       e.preventDefault();
       e.stopPropagation();
       if (e.stopImmediatePropagation) e.stopImmediatePropagation();
-      irPara(alvoUrl);
+    }
+
+    function refazer(el) {                                  // produto SEM par: refaz a compra normal da loja
+      bypass = true;
+      try {
+        if (el.tagName === 'A' && el.href) { location.href = el.href; return; }
+        var form = el.closest ? el.closest('form[action*="/cart/add"]') : null;
+        if (form) { if (form.requestSubmit) form.requestSubmit(); else form.submit(); return; }
+        el.click();
+      } catch (err) { try { el.click(); } catch (e2) {} }
+    }
+
+    // CHAVE PRO 100%: no clique de compra, bloqueia PRIMEIRO. Se o destino ainda
+    // não chegou, espera — assim nunca escapa pro checkout da vitrine.
+    // decide o destino no momento do clique. Se já sabemos → instantâneo.
+    // Se não (load lento/falhou) → bloqueia e resolve de novo antes de liberar.
+    function decidir(refazerFn) {
+      if (alvoUrl) { irPara(alvoUrl); return; }            // pronto e mapeado
+      var p = resolvido ? resolverAgora() : pendente.then(function () { return alvoUrl; });
+      p.then(function (u) { if (u) irPara(u); else refazerFn(); });
+    }
+
+    document.addEventListener('click', function (e) {
+      if (bypass) return;
+      var el = e.target && e.target.closest ? e.target.closest(SELETOR) : null;
+      if (!el) return;
+      bloquear(e);                                         // bloqueia SEMPRE primeiro (não escapa)
+      decidir(function () { refazer(el); });
     }, true);
 
-    // "adicionar ao carrinho" costuma submeter um <form action="/cart/add">
-    document.addEventListener('submit', function (e) {
-      if (!alvoUrl) return;
-      if (e.target && e.target.matches && e.target.matches('form[action*="/cart/add"]')) {
-        e.preventDefault();
-        e.stopPropagation();
-        irPara(alvoUrl);
-      }
+    document.addEventListener('submit', function (e) {     // "adicionar ao carrinho" via <form>
+      if (bypass) return;
+      if (!(e.target && e.target.matches && e.target.matches('form[action*="/cart/add"]'))) return;
+      var form = e.target;
+      bloquear(e);
+      decidir(function () { bypass = true; if (form.requestSubmit) form.requestSubmit(); else form.submit(); });
     }, true);
   } catch (e) { /* nunca quebra a loja do cliente */ }
 })();`;
@@ -2068,7 +2092,7 @@ app.get('/redirect.js', async (req, res) => {
   try {
     const cfg = await loadRedirectConfig();
     res.type('application/javascript');
-    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.setHeader('Cache-Control', 'public, max-age=60'); // curto: mudanças de config propagam rápido
     res.setHeader('Access-Control-Allow-Origin', '*');
     if (!cfg.enabled) return res.send('/* redirect desligado no painel */');
     res.send(buildStorefrontScript(appBaseUrl(req), cfg));
