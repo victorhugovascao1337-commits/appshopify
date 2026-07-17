@@ -516,18 +516,10 @@ app.post('/api/stores', async (req, res) => {
   await saveStores(stores);
   cache.clear();
 
-  /*
-   * Loja nova entra no pool de checkout automaticamente (menos a primeira, que
-   * vira a vitrine). Sem isso ela ficava só em "disponíveis", o Flow continuava
-   * vazio e não dava para mapear produto nenhum — parecia que faltava o recurso.
-   */
+  // papel escolhido no assistente: 'vitrine' ou 'checkout' (padrão: checkout)
   try {
-    const { f } = await ensureFlowConfig();
-    if (f.vitrineId && store.id !== f.vitrineId && !f.pool.some((p) => p.id === store.id)) {
-      f.pool.push({ id: store.id, limit: DEFAULT_LIMIT, dailyLimit: 0, paused: false, resetAt: null });
-      if (!f.state.activeId) f.state = { activeId: store.id, activatedAt: new Date().toISOString() };
-      await saveFlowConfig(f);
-    }
+    const role = req.body.role === 'vitrine' ? 'vitrine' : 'checkout';
+    await applyStoreRole(store.id, role);
   } catch { /* o painel funciona mesmo se o flow ainda não estiver configurado */ }
 
   res.json({ store: publicStore(store) });
@@ -654,7 +646,11 @@ async function ensureFlowConfig() {
 
   if (typeof f.paused !== 'boolean') { f.paused = false; dirty = true; }
   if (!f.vitrineId || !stores.some((s) => s.id === f.vitrineId)) {
-    f.vitrineId = stores[0] ? stores[0].id : null;
+    // vitrine padrão = uma loja que NÃO foi marcada como checkout (não está no pool).
+    // Assim, marcar lojas como checkout não faz nenhuma delas virar vitrine sozinha.
+    const poolIds = new Set(Array.isArray(f.pool) ? f.pool.map((p) => p.id) : []);
+    const cand = stores.find((s) => !poolIds.has(s.id));
+    f.vitrineId = cand ? cand.id : null;
     dirty = true;
   }
 
@@ -691,6 +687,25 @@ async function ensureFlowConfig() {
 
   const pool = f.pool.map((p) => ({ ...stores.find((s) => s.id === p.id), cfg: p }));
   return { f, stores, pool, dirty };
+}
+
+// define o papel de uma loja no Flow: 'vitrine' (a vitrine) ou 'checkout' (entra no pool)
+async function applyStoreRole(storeId, role) {
+  const { f } = await ensureFlowConfig();
+  if (role === 'vitrine') {
+    f.vitrineId = storeId;
+    f.pool = f.pool.filter((p) => p.id !== storeId);            // vitrine não fica no pool
+    if (f.state && f.state.activeId === storeId) {
+      f.state = { activeId: f.pool[0] ? f.pool[0].id : null, activatedAt: new Date().toISOString() };
+    }
+  } else {
+    if (f.vitrineId === storeId) f.vitrineId = null;            // era vitrine, virou checkout
+    if (!f.pool.some((p) => p.id === storeId)) {
+      f.pool.push({ id: storeId, limit: DEFAULT_LIMIT, dailyLimit: 0, paused: false, resetAt: null });
+    }
+    if (!f.state || !f.state.activeId) f.state = { activeId: storeId, activatedAt: new Date().toISOString() };
+  }
+  await saveFlowConfig(f);
 }
 
 function startOfToday() {
@@ -1672,8 +1687,8 @@ function oauthRedirectUri(req) {
 }
 
 // state assinado: carrega a loja e um nonce, com validade curta
-function makeState(shop) {
-  const payload = Buffer.from(JSON.stringify({ shop, exp: Date.now() + OAUTH_STATE_MINUTES * 60000, n: crypto.randomBytes(8).toString('hex') })).toString('base64url');
+function makeState(shop, role) {
+  const payload = Buffer.from(JSON.stringify({ shop, role: role || null, exp: Date.now() + OAUTH_STATE_MINUTES * 60000, n: crypto.randomBytes(8).toString('hex') })).toString('base64url');
   return `${payload}.${sign(payload)}`;
 }
 
@@ -1763,7 +1778,7 @@ app.post('/api/oauth/start', async (req, res) => {
     const url = `https://${shop}/admin/oauth/authorize?client_id=${encodeURIComponent(clientId)}` +
       `&scope=${encodeURIComponent(OAUTH_SCOPES)}` +
       `&redirect_uri=${encodeURIComponent(oauthRedirectUri(req))}` +
-      `&state=${encodeURIComponent(makeState(shop))}`;
+      `&state=${encodeURIComponent(makeState(shop, (req.body || {}).role === 'vitrine' ? 'vitrine' : 'checkout'))}`;
     res.json({ ok: true, url, redirectUri: oauthRedirectUri(req) });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1848,14 +1863,9 @@ app.get('/api/oauth/callback', async (req, res) => {
     await saveStores(stores);
     cache.clear();
 
-    // loja nova entra no pool de checkout (a primeira vira vitrine)
+    // papel escolhido no assistente (veio assinado no state): vitrine ou checkout
     try {
-      const { f } = await ensureFlowConfig();
-      if (f.vitrineId && store.id !== f.vitrineId && !f.pool.some((p) => p.id === store.id)) {
-        f.pool.push({ id: store.id, limit: DEFAULT_LIMIT, dailyLimit: 0, paused: false, resetAt: null });
-        if (!f.state.activeId) f.state = { activeId: store.id, activatedAt: new Date().toISOString() };
-        await saveFlowConfig(f);
-      }
+      await applyStoreRole(store.id, st.role === 'vitrine' ? 'vitrine' : 'checkout');
     } catch { /* não impede a conexão */ }
 
     res.redirect(`/?conectada=${encodeURIComponent(name)}`);

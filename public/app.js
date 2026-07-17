@@ -1934,7 +1934,7 @@ setInterval(loadLive, 25000);
 
 /* ================= ABA LOJAS ================= */
 
-const lojas = { view: 'list', wizardStep: 1, wizardMode: 'custom', detailId: null, detailTab: 'overview', overview: [], lastConnected: null };
+const lojas = { view: 'list', wizardStep: 1, wizardMode: 'custom', wizardRole: 'checkout', detailId: null, detailTab: 'overview', overview: [], lastConnected: null };
 
 function lojasShow(view) {
   lojas.view = view;
@@ -2035,6 +2035,8 @@ function openWizard() {
   lojasShow('connect');
   gotoStep(1);
   setWizardMode('custom');
+  // padrão inteligente: sem nenhuma loja ainda → a primeira costuma ser a vitrine
+  setWizardRole((lojas.overview && lojas.overview.length === 0) ? 'vitrine' : 'checkout');
   $('wizDomain').value = '';
   $('wizToken').value = '';
   $('wizName').value = '';
@@ -2062,6 +2064,12 @@ function setWizardMode(mode) {
   $('wizValidate').innerHTML = mode === 'oauth' ? '↗ Autorizar via OAuth' : '⚡ Validar e conectar';
   if (mode === 'oauth') loadOauthInfo();
 }
+
+function setWizardRole(role) {
+  lojas.wizardRole = role === 'vitrine' ? 'vitrine' : 'checkout';
+  document.querySelectorAll('.role-opt').forEach((b) => b.classList.toggle('selected', b.dataset.role === lojas.wizardRole));
+}
+document.querySelectorAll('.role-opt').forEach((b) => b.addEventListener('click', () => setWizardRole(b.dataset.role)));
 
 // volta do OAuth: a Shopify redireciona para /?conectada=<loja>
 {
@@ -2125,7 +2133,7 @@ async function oauthStart() {
     const res = await fetch('/api/oauth/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ domain, clientId: $('oauthClientId').value.trim(), secret: $('oauthSecret').value.trim() }),
+      body: JSON.stringify({ domain, clientId: $('oauthClientId').value.trim(), secret: $('oauthSecret').value.trim(), role: lojas.wizardRole }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Falha ao iniciar o OAuth.');
@@ -2142,7 +2150,7 @@ $('wizValidate').addEventListener('click', async () => {
   const token = $('wizToken').value.trim();
   const name = $('wizName').value.trim();
   if (!domain || !token) { setWizStatus('wizStatus', '✗ Informe o domínio e o token.', 'err'); return; }
-  await wizConnectCustom({ name, domain, token });
+  await wizConnectCustom({ name, domain, token, role: lojas.wizardRole });
 });
 
 async function wizConnectCustom(body, reconnect) {

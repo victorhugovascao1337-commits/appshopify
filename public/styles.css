@@ -947,6 +947,20 @@ textarea.panel-input { resize: vertical; }
 .po-name { font-weight: 700; font-size: 14px; }
 .po-desc { font-size: 11.5px; color: var(--text-muted); }
 
+/* seletor de papel da loja (vitrine x checkout) */
+.role-picker { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.role-opt {
+  font: inherit; cursor: pointer; text-align: left; padding: 14px 16px;
+  border: 1.5px solid var(--border); border-radius: 14px; background: var(--surface-solid);
+  display: flex; flex-direction: column; gap: 3px; transition: all 0.15s;
+}
+.role-opt:hover { border-color: var(--border-accent); }
+.role-opt.selected { border-color: var(--accent); background: var(--accent-tint); box-shadow: 0 0 0 3px var(--accent-soft); }
+.ro-ico { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; font-size: 19px; background: var(--accent-tint); margin-bottom: 5px; }
+.role-opt.selected .ro-ico { background: var(--surface-solid); }
+.ro-name { font-weight: 700; font-size: 14px; }
+.ro-desc { font-size: 11.5px; color: var(--text-muted); line-height: 1.4; }
+
 .mode-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px; }
 .mode-opt {
   font: inherit; cursor: pointer; text-align: left; padding: 14px 16px;
