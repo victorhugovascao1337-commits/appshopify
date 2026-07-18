@@ -2180,75 +2180,48 @@ function buildStorefrontScript(panelUrl, cfg) {
       resolverAgora().then(function (u) { if (u) irPara(u); else refazerFn(); });
     }
 
-    /* (1) AGNÓSTICO DE TEMA: intercepta a REQUISIÇÃO de "adicionar ao carrinho".
-       A maioria dos temas usa AJAX com botões fora do <form>, com classes próprias —
-       pegar a requisição funciona em qualquer tema, sem depender de seletor. */
-    var _fetch = window.fetch;
-    if (_fetch) {
-      window.fetch = function (input, init) {
-        var args = arguments;
-        try {
-          var u = typeof input === 'string' ? input : (input && input.url) || '';
-          if (!bypass && /\\/cart\\/add/.test(u)) {
-            return resolverAgora().then(function (url) {
-              if (url) { irPara(url); return new Promise(function () {}); } // vai pro checkout
-              bypass = true;                                                 // sem par: adiciona normal
-              return _fetch.apply(window, args);
-            });
-          }
-        } catch (err) { /* ignora */ }
-        return _fetch.apply(this, args);
-      };
-    }
-    var _open = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function (mth, url) {
-      try { if (/\\/cart\\/add/.test(String(url))) this.__compra = true; } catch (err) {}
-      return _open.apply(this, arguments);
-    };
-    var _send = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.send = function () {
-      var self = this, args = arguments;
-      if (self.__compra && !bypass) {
-        resolverAgora().then(function (url) {
-          if (url) irPara(url);
-          else { bypass = true; _send.apply(self, args); }
-        });
-        return;
-      }
-      return _send.apply(self, args);
-    };
+    /* IMPORTANTE: "Adicionar ao carrinho" NÃO redireciona — deixa abrir o carrinho
+       (drawer lateral) normalmente. O redirect acontece só no CHECKOUT / comprar agora.
+       Assim o cliente monta o carrinho e, ao clicar em "Finalizar/Check out", vai pro
+       checkout da loja de destino com todos os itens. Agnóstico de tema. */
 
-    /* (2) cliques: seletores comuns de vários temas + reconhecimento por texto */
-    var SELETOR = 'form[action*="/cart/add"] [type="submit"], form[action*="/cart/add"] [name="add"],'
-      + ' button[name="add"], [data-add-to-cart], [data-product-add], [id*="AddToCart"],'
-      + ' [class*="add-to-cart"], [class*="add_to_cart"], [class*="atc-"], [class*="-atc"],'
-      + ' [class*="product-form__submit"], [class*="product-atc"],'
-      + ' .shopify-payment-button, .shopify-payment-button__button, [data-shopify="payment-button"],'
-      + ' [name="checkout"], a[href*="/checkout"], a[href*="/cart"]';
-    var RE_COMPRA = /(add to cart|adicionar ao carrinho|comprar agora|comprar|buy it now|buy now|finalizar compra|finalizar pedido|checkout)/i;
+    // seletores de CHECKOUT / comprar-agora (não inclui add-to-cart)
+    var SELETOR = '.shopify-payment-button, .shopify-payment-button__button, [data-shopify="payment-button"],'
+      + ' [name="checkout"], [id*="checkout" i], [class*="checkout" i],'
+      + ' a[href*="/checkout"], a[href$="/cart"], [href*="/checkout"]';
+    // texto de checkout / comprar-agora (NÃO "add to cart")
+    var RE_CHECKOUT = /(check\\s?out|finalizar (compra|pedido|)|ir para o pagamento|comprar agora|buy it now|buy now|proceed to (checkout|pay))/i;
+    var RE_ADD = /(add to cart|adicionar ao carrinho|añadir al carrito)/i;
 
-    function alvoDeCompra(t) {
+    function alvoCheckout(t) {
       if (!t || !t.closest) return null;
-      var el = null;
-      try { el = t.closest(SELETOR); } catch (err) { /* seletor exótico */ }
-      if (el) return el;
-      var b = t.closest('button, a, input[type="submit"]');
-      if (b && RE_COMPRA.test((b.textContent || b.value || '').trim())) return b;
+      var b = t.closest('button, a, input[type="submit"], [role="button"]');
+      if (!b) return null;
+      var txt = (b.textContent || b.value || '').trim();
+      if (RE_ADD.test(txt)) return null;                   // é "adicionar ao carrinho" → ignora
+      try { if (b.closest(SELETOR)) return b; } catch (err) { /* seletor exótico */ }
+      if (RE_CHECKOUT.test(txt)) return b;                 // reconhece "Check out"/"Finalizar" por texto
+      var href = b.getAttribute && b.getAttribute('href');
+      if (href && /\\/checkout/.test(href)) return b;
       return null;
     }
 
     document.addEventListener('click', function (e) {
       if (bypass) return;
-      var el = alvoDeCompra(e.target);
+      var el = alvoCheckout(e.target);
       if (!el) return;
       bloquear(e);                                         // bloqueia SEMPRE primeiro (não escapa)
       decidir(function () { refazer(el); });
     }, true);
 
-    document.addEventListener('submit', function (e) {     // add-to-cart e checkout via <form>
+    // checkout via <form> (ex.: form[action="/cart"] com botão name=checkout) — nunca /cart/add
+    document.addEventListener('submit', function (e) {
       if (bypass) return;
       var form = e.target;
-      if (!(form && form.matches && (form.matches('form[action*="/cart/add"]') || form.matches('form[action^="/cart"]') || form.matches('form[action*="/checkout"]')))) return;
+      if (!form || !form.matches) return;
+      var act = (form.getAttribute && form.getAttribute('action')) || '';
+      var ehCheckout = /\\/checkout/.test(act) || (/\\/cart(\\?|$|\\/)/.test(act) && !/\\/cart\\/add/.test(act));
+      if (!ehCheckout) return;                             // add-to-cart passa direto (abre o drawer)
       bloquear(e);
       decidir(function () { bypass = true; if (form.requestSubmit) form.requestSubmit(); else form.submit(); });
     }, true);
