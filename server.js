@@ -2096,7 +2096,7 @@ function buildStorefrontScript(panelUrl, cfg) {
     var m = location.pathname.match(/\\/products\\/([^\\/?#]+)/);
     var handle = m ? m[1] : null;
     var ehCarrinho = /\\/cart/.test(location.pathname);
-    if (!handle && !ehCarrinho) return;                   // só em página de produto ou carrinho
+    var ehProdutoOuCarrinho = !!handle || ehCarrinho;     // modo "ao abrir" só age aqui; modo "ao clicar" age em QUALQUER página (home, coleção, produto em destaque, etc.)
 
     var qs = new URLSearchParams(location.search);
     if (qs.get('noredirect') === '1') return;             // atalho para você testar a vitrine
@@ -2153,7 +2153,11 @@ function buildStorefrontScript(panelUrl, cfg) {
       });
     }
 
-    if (TRIGGER === 'load') { resolverAgora().then(irPara); return; }
+    if (TRIGGER === 'load') {
+      if (!ehProdutoOuCarrinho) return;                   // "ao abrir" só redireciona em produto/carrinho (nunca a home inteira sozinha)
+      resolverAgora().then(irPara);
+      return;
+    }
 
     // ----- modo "ao clicar em comprar" -----
     var bypass = false;
