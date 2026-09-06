@@ -70,7 +70,7 @@ function readCookie(req, name) {
   return hit ? decodeURIComponent(hit.slice(name.length + 1)) : null;
 }
 
-const LOGIN_PATHS = new Set(['/login', '/api/login']);
+const LOGIN_PATHS = new Set(['/login', '/api/login', '/utm/redirect']);
 
 app.use((req, res, next) => {
   if (IS_HOSTED && !PANEL_PASSWORD) {
@@ -117,6 +117,44 @@ app.post('/api/logout', (req, res) => {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Rota segura que recebe `target` (URL do checkout externo), lê UTMs do cookie
+// `utm_params` e redireciona para o checkout anexando os UTMs. Use apenas em
+// ambiente local ou quando confiar na origem porque abre redirect para URLs
+// externas.
+app.get('/utm/redirect', (req, res) => {
+  const target = req.query.target;
+  if (!target) return res.status(400).send('Missing target');
+  // lê cookie utmify_params se existir
+  let utm = {};
+  try {
+    const raw = req.headers.cookie || '';
+    const part = raw.split(';').map(c=>c.trim()).find(c=>c.startsWith('utmify_params='));
+    if (part) {
+      const val = decodeURIComponent(part.slice('utmify_params='.length));
+      const obj = JSON.parse(val);
+      if (obj && obj.v) utm = obj.v;
+    }
+  } catch (e) { /* ignore */ }
+  // também aceita UTMs vindas na query atual (por ex. do ad)
+  const extraParams = ['fbclid','gclid','ttclid','twclid','msclkid'];
+  for (const [k,v] of Object.entries(req.query || {})) {
+    if (k.startsWith('utm_') || extraParams.includes(k)) {
+      utm[k] = v;
+    }
+  }
+
+  try {
+    const u = new URL(String(target));
+    for (const [k,v] of Object.entries(utm)) if (v != null) u.searchParams.set(k, String(v));
+    return res.redirect(302, u.toString());
+  } catch (e) {
+    // fallback concatenation
+    const qs = new URLSearchParams(utm).toString();
+    const sep = target.includes('?') ? '&' : '?';
+    return res.redirect(302, target + (qs ? sep + qs : ''));
+  }
+});
 
 /* ---------- persistência das lojas ---------- */
 
@@ -2101,17 +2139,66 @@ function buildStorefrontScript(panelUrl, cfg) {
     var qs = new URLSearchParams(location.search);
     if (qs.get('noredirect') === '1') return;             // atalho para você testar a vitrine
 
+    var adParams = ['fbclid', 'gclid', 'ttclid', 'twclid', 'msclkid', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'];
+    function readStoredParams() {
+      try { return JSON.parse(localStorage.getItem('utmify_params') || '{}') || {}; } catch (e) { return {}; }
+    }
+    function setCookie(name, value, days) {
+      try {
+        var d = new Date();
+        d.setTime(d.getTime() + (days || 30) * 24 * 60 * 60 * 1000);
+        document.cookie = name + '=' + encodeURIComponent(value) + '; path=/; expires=' + d.toUTCString();
+      } catch (e) {}
+    }
+    function saveStoredParams(params) {
+      try {
+        localStorage.setItem('utmify_params', JSON.stringify(params));
+      } catch (e) {}
+      try {
+        setCookie('utmify_params', JSON.stringify(params), 30);
+      } catch (e) {}
+    }
+    function getParamsFromSearch() {
+      var params = {};
+      for (var i = 0; i < adParams.length; i++) {
+        var key = adParams[i];
+        if (qs.has(key)) params[key] = qs.get(key);
+      }
+      return params;
+    }
+    function mergeParams(base, extra) {
+      var out = {};
+      for (var key in base) if (base.hasOwnProperty(key) && base[key] != null && base[key] !== '') out[key] = base[key];
+      for (var key in extra) if (extra.hasOwnProperty(key) && extra[key] != null && extra[key] !== '') out[key] = extra[key];
+      return out;
+    }
+    function appendParams(url, params) {
+      if (!params || Object.keys(params).length === 0) return url;
+      try {
+        var u = new URL(url, location.href);
+        Object.keys(params).forEach(function (key) { u.searchParams.set(key, params[key]); });
+        return u.toString();
+      } catch (e) {
+        var sep = url.indexOf('?') === -1 ? '?' : '&';
+        return url + sep + new URLSearchParams(params).toString();
+      }
+    }
+
+    var pageParams = getParamsFromSearch();
+    if (Object.keys(pageParams).length) saveStoredParams(pageParams);
+    var storedParams = readStoredParams();
+
     // modo "ads": só redireciona quem veio de anúncio
     if (MODE === 'ads') {
-      var adParams = ['fbclid', 'gclid', 'ttclid', 'twclid', 'msclkid', 'utm_source', 'utm_medium', 'utm_campaign'];
-      var veioDeAnuncio = adParams.some(function (p) { return qs.has(p); });
+      var veioDeAnuncio = adParams.some(function (p) { return qs.has(p) || storedParams[p]; });
       if (!veioDeAnuncio) return;
     }
 
     function irPara(alvo) {
       if (!alvo) return;
-      if (KEEP && location.search) {                       // leva utm/fbclid para a outra loja
-        alvo += (alvo.indexOf('?') === -1 ? '?' : '&') + location.search.slice(1);
+      if (KEEP) {                       // leva utm/fbclid para a outra loja
+        var params = mergeParams(storedParams, pageParams);
+        if (Object.keys(params).length) alvo = appendParams(alvo, params);
       }
       location.replace(alvo);                              // replace: não suja o histórico
     }
@@ -2210,7 +2297,11 @@ function buildStorefrontScript(panelUrl, cfg) {
       return null;
     }
 
-    document.addEventListener('click', function (e) {
+    /* listeners no WINDOW (capture): na captura o evento passa por window ANTES de
+       document, então ganhamos de apps de checkout (ex.: Pagou Aí) que registram
+       capture no document com stopImmediatePropagation — independente da ordem de load.
+       Se nada estiver mapeado, refazer() re-dispara o clique e o app do tema segue como fallback. */
+    window.addEventListener('click', function (e) {
       if (bypass) return;
       var el = alvoCheckout(e.target);
       if (!el) return;
@@ -2219,7 +2310,7 @@ function buildStorefrontScript(panelUrl, cfg) {
     }, true);
 
     // checkout via <form> (ex.: form[action="/cart"] com botão name=checkout) — nunca /cart/add
-    document.addEventListener('submit', function (e) {
+    window.addEventListener('submit', function (e) {
       if (bypass) return;
       var form = e.target;
       if (!form || !form.matches) return;
