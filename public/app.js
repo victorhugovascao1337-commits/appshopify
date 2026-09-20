@@ -245,7 +245,6 @@ setInterval(() => {
   const s = Math.round((Date.now() - state.lastLiveAt) / 1000);
   const txt = s < 5 ? 'atualizado agora' : `atualizado há ${s}s`;
   $('liveUpdated').textContent = txt;
-  $('liveUpdated2').textContent = txt;
 }, 1000);
 
 /* ---------- meta do dia ---------- */
@@ -577,6 +576,7 @@ $('storeFilter').addEventListener('change', (e) => {
   liveInitialized = false; // repovoa o feed sem disparar notificações
   loadMetrics();
   loadLive();
+  lvLoad();
 });
 
 /* ---------- modal gerenciar lojas ---------- */
@@ -682,6 +682,7 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
       scLoad();
     }
     if (state.tab === 'lojas') loadLojas();
+    if (state.tab === 'command') lvLoad();
   });
 });
 
@@ -763,6 +764,7 @@ function renderHealth(m) {
 
 function renderCountries(m) {
   const ul = $('countryList');
+  if (!ul) return; // a lista saiu do layout — o Live View mostra "Sessões por local"
   if (!m.topCountries || !m.topCountries.length) {
     ul.innerHTML = '<li class="feed-empty">Sem dados de país no período.</li>';
     return;
@@ -782,6 +784,7 @@ function renderCountries(m) {
 
 function renderLiveFeed2(l) {
   const feed = $('liveFeed2');
+  if (!feed) return; // o feed saiu do layout — os pedidos aparecem como pings no Live View
   if (!l.recent.length) {
     feed.innerHTML = '<li class="feed-empty">Nenhum pedido na última hora.</li>';
   } else {
@@ -808,8 +811,7 @@ function renderCommand(m) {
   renderAlerts(m);
   renderHealth(m);
   renderCountries(m);
-  globe.points = (m.geoPoints || []).slice();
-  $('globeSub').textContent = `${globe.points.length} pedido${globe.points.length === 1 ? '' : 's'} no mapa · ${RANGE_LABEL[state.range] || ''}`;
+  // os pontos do mapa agora vêm do /api/liveview (lvLoad) — pedidos de hoje + visitantes ao vivo
 }
 
 /* ---------- flow de contingência ---------- */
@@ -1801,125 +1803,468 @@ setInterval(() => {
   else loadFlowView();
 }, 30000);
 
-/* ---------- globo (canvas, projeção ortográfica) ---------- */
+/* ---------- Live View (estilo Shopify): globo 3D interativo ⇄ mapa plano ---------- */
 
-const globe = { land: [], points: [], pings: [], rot: 0.8, last: 0 };
+const globe = { land: [], points: [], pings: [], rot: 0.8, last: 0 }; // compartilhado — o Analytics usa .land
+
+const lv = {
+  land: [],                          // continentes em alta densidade (land-dots-hd.json)
+  mode: 'globe',                     // 'globe' | 'map'
+  rot: 0.8, tilt: -0.35, zoom: 1,
+  rotV: 0,                           // inércia do arrasto
+  rotTarget: null, tiltTarget: null, // "voar até" (resultado da busca)
+  dragging: false, lastX: 0, lastY: 0, lastDx: 0,
+  visitors: [],
+  searchPing: null,
+  data: null, map: null, mapLayer: null, leafletLoading: null,
+  last: 0,
+};
 
 async function initGlobe() {
-  try {
-    globe.land = await (await fetch('/land-dots.json')).json();
-  } catch {
-    globe.land = [];
-  }
-  requestAnimationFrame(globeTick);
+  try { globe.land = await (await fetch('/land-dots.json')).json(); } catch { globe.land = []; }
+  try { lv.land = await (await fetch('/land-dots-hd.json')).json(); } catch { lv.land = globe.land; }
+  requestAnimationFrame(lvTick);
 }
 
-const TILT = -0.45; // inclina para o hemisfério sul (Brasil em evidência)
-
-function project3d(latDeg, lngDeg, R) {
+function lvProject(latDeg, lngDeg, R) {
   const la = (latDeg * Math.PI) / 180;
-  const lo = (lngDeg * Math.PI) / 180 + globe.rot;
+  const lo = (lngDeg * Math.PI) / 180 + lv.rot;
   const x = Math.cos(la) * Math.sin(lo);
   const y = Math.sin(la);
   const z = Math.cos(la) * Math.cos(lo);
-  const y2 = y * Math.cos(TILT) - z * Math.sin(TILT);
-  const z2 = y * Math.sin(TILT) + z * Math.cos(TILT);
+  const y2 = y * Math.cos(lv.tilt) - z * Math.sin(lv.tilt);
+  const z2 = y * Math.sin(lv.tilt) + z * Math.cos(lv.tilt);
   return { x: x * R, y: -y2 * R, z: z2 };
 }
 
-function globeTick(ts) {
-  requestAnimationFrame(globeTick);
-  const dt = globe.last ? Math.min(0.1, (ts - globe.last) / 1000) : 0;
-  globe.last = ts;
-  if (state.tab !== 'command') return; // pausa fora da aba
+// cor dos pontinhos: degradê teal → azul pela posição na esfera (visual Shopify)
+function lvDotColor(p, R, a) {
+  const t = Math.min(1, Math.max(0, ((p.x / R) + 1) / 2 * 0.5 + (1 - ((p.y / R) + 1) / 2) * 0.5));
+  const r = Math.round(77 + (53 - 77) * t);
+  const g = Math.round(141 + (195 - 141) * t);
+  const b = Math.round(240 + (180 - 240) * t);
+  return `rgba(${r}, ${g}, ${b}, ${a.toFixed(2)})`;
+}
 
-  const canvas = $('globe');
+function lvNormAngle(a) {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
+
+function lvTick(ts) {
+  requestAnimationFrame(lvTick);
+  const dt = lv.last ? Math.min(0.1, (ts - lv.last) / 1000) : 0;
+  lv.last = ts;
+  if (state.tab !== 'command' || lv.mode !== 'globe') return;
+  const canvas = $('lvGlobe');
+  if (!canvas || !canvas.parentElement) return;
   const wrap = canvas.parentElement;
-  const size = Math.min(wrap.clientWidth, wrap.clientHeight || 999, 460);
-  if (size < 60) return;
+  const W = wrap.clientWidth;
+  const H = wrap.clientHeight;
+  if (W < 80 || H < 80) return;
   const dpr = window.devicePixelRatio || 1;
-  if (canvas.width !== size * dpr) {
-    canvas.width = size * dpr;
-    canvas.height = size * dpr;
-    canvas.style.width = `${size}px`;
-    canvas.style.height = `${size}px`;
+  if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
   }
   const ctx = canvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, size, size);
+  ctx.clearRect(0, 0, W, H);
 
-  globe.rot += dt * 0.10; // rotação lenta
-
-  const cx = size / 2;
-  const cy = size / 2;
-  const R = size * 0.42;
-
-  // halo suave (estilo airy light)
-  let g = ctx.createRadialGradient(cx, cy, R * 0.9, cx, cy, R * 1.22);
-  g.addColorStop(0, 'rgba(42, 120, 214, 0)');
-  g.addColorStop(0.55, 'rgba(42, 120, 214, 0.10)');
-  g.addColorStop(1, 'rgba(42, 120, 214, 0)');
-  ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.arc(cx, cy, R * 1.25, 0, Math.PI * 2);
-  ctx.fill();
-
-  // esfera clara
-  g = ctx.createRadialGradient(cx - R * 0.35, cy - R * 0.4, R * 0.1, cx, cy, R);
-  g.addColorStop(0, '#ffffff');
-  g.addColorStop(1, '#e3edfb');
-  ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.arc(cx, cy, R, 0, Math.PI * 2);
-  ctx.fill();
-
-  // borda
-  ctx.strokeStyle = 'rgba(42, 120, 214, 0.30)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.arc(cx, cy, R, 0, Math.PI * 2);
-  ctx.stroke();
-
-  // continentes em pontinhos azuis
-  for (let i = 0; i < globe.land.length; i++) {
-    const p = project3d(globe.land[i][0], globe.land[i][1], R);
-    if (p.z <= 0.02) continue;
-    ctx.fillStyle = `rgba(42, 120, 214, ${(0.14 + 0.42 * p.z).toFixed(2)})`;
-    ctx.fillRect(cx + p.x - 0.8, cy + p.y - 0.8, 1.7, 1.7);
+  // física: auto-rotação, inércia e "voar até" da busca
+  if (!lv.dragging) {
+    if (lv.rotTarget != null) {
+      const dr = lvNormAngle(lv.rotTarget - lv.rot);
+      const dl = (lv.tiltTarget != null ? lv.tiltTarget : lv.tilt) - lv.tilt;
+      lv.rot += dr * Math.min(1, dt * 4);
+      lv.tilt += dl * Math.min(1, dt * 4);
+      if (Math.abs(dr) < 0.004 && Math.abs(dl) < 0.004) { lv.rotTarget = null; lv.tiltTarget = null; }
+    } else {
+      lv.rot += dt * 0.05 + lv.rotV;
+      lv.rotV *= 0.94;
+    }
   }
 
-  // pedidos — pontos verdes (mais recentes ficam mais fortes)
+  const narrow = W < 900;
+  const cx = narrow ? W * 0.5 : Math.max(W * 0.56, 470 + (W - 470) * 0.42);
+  const cy = H * 0.52;
+  const R = Math.min(W, H) * 0.40 * lv.zoom;
+
+  // brilhos suaves atrás da esfera (teal no topo, azul à esquerda — visual Shopify)
+  let g = ctx.createRadialGradient(cx + R * 0.5, cy - R * 0.9, R * 0.1, cx + R * 0.5, cy - R * 0.9, R * 1.4);
+  g.addColorStop(0, 'rgba(70, 210, 190, 0.22)');
+  g.addColorStop(1, 'rgba(70, 210, 190, 0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  g = ctx.createRadialGradient(cx - R * 1.1, cy + R * 0.3, R * 0.1, cx - R * 1.1, cy + R * 0.3, R * 1.5);
+  g.addColorStop(0, 'rgba(77, 141, 240, 0.20)');
+  g.addColorStop(1, 'rgba(77, 141, 240, 0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // esfera
+  g = ctx.createRadialGradient(cx - R * 0.35, cy - R * 0.45, R * 0.1, cx, cy, R);
+  g.addColorStop(0, '#f4fafd');
+  g.addColorStop(0.7, '#e2eef9');
+  g.addColorStop(1, '#cfe2f4');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.fill();
+  // aro luminoso
+  ctx.strokeStyle = 'rgba(90, 200, 190, 0.35)';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R + 1, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // continentes (pontinhos em degradê)
+  const dot = Math.max(1.3, R * 0.0058);
+  const half = dot / 2;
+  for (let i = 0; i < lv.land.length; i++) {
+    const p = lvProject(lv.land[i][0], lv.land[i][1], R);
+    if (p.z <= 0.02) continue;
+    ctx.fillStyle = lvDotColor(p, R, 0.28 + 0.62 * p.z);
+    ctx.fillRect(cx + p.x - half, cy + p.y - half, dot, dot);
+  }
+
+  // visitantes agora — pontos azuis pulsando
+  const pulse = 0.65 + 0.35 * Math.sin(ts / 450);
+  for (const v of lv.visitors) {
+    const p = lvProject(v.lat, v.lng, R);
+    if (p.z <= 0.02) continue;
+    ctx.beginPath();
+    ctx.arc(cx + p.x, cy + p.y, 7, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(61, 141, 245, ${(0.16 * pulse).toFixed(2)})`;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx + p.x, cy + p.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(61, 141, 245, ${(0.5 + 0.5 * p.z).toFixed(2)})`;
+    ctx.fill();
+  }
+
+  // pedidos — pontos roxos (mais recentes mais fortes)
   const now = Date.now();
   for (const pt of globe.points) {
-    const p = project3d(pt.lat, pt.lng, R);
+    const p = lvProject(pt.lat, pt.lng, R);
     if (p.z <= 0.02) continue;
     const ageH = (now - pt.t) / 36e5;
-    const alpha = Math.max(0.4, 1 - ageH / 24) * (0.45 + 0.55 * p.z);
+    const alpha = Math.max(0.45, 1 - ageH / 24) * (0.5 + 0.5 * p.z);
     ctx.save();
-    ctx.shadowColor = 'rgba(4, 118, 71, 0.55)';
-    ctx.shadowBlur = 5;
-    ctx.fillStyle = `rgba(4, 148, 88, ${alpha.toFixed(2)})`;
+    ctx.shadowColor = 'rgba(128, 81, 255, 0.6)';
+    ctx.shadowBlur = 6;
+    ctx.fillStyle = `rgba(128, 81, 255, ${alpha.toFixed(2)})`;
     ctx.beginPath();
-    ctx.arc(cx + p.x, cy + p.y, 2.2, 0, Math.PI * 2);
+    ctx.arc(cx + p.x, cy + p.y, 3.2, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
 
-  // pings de pedido novo (anel expansivo por ~4s)
+  // pings de pedido novo (anel expansivo)
   globe.pings = globe.pings.filter((pg) => ts - pg.born < 4000);
   for (const pg of globe.pings) {
-    const p = project3d(pg.lat, pg.lng, R);
+    const p = lvProject(pg.lat, pg.lng, R);
     if (p.z <= 0.02) continue;
     const k = (ts - pg.born) / 4000;
-    ctx.strokeStyle = `rgba(4, 148, 88, ${(0.8 * (1 - k)).toFixed(2)})`;
-    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = `rgba(128, 81, 255, ${(0.85 * (1 - k)).toFixed(2)})`;
+    ctx.lineWidth = 1.8;
     ctx.beginPath();
-    ctx.arc(cx + p.x, cy + p.y, 3 + k * 20, 0, Math.PI * 2);
+    ctx.arc(cx + p.x, cy + p.y, 4 + k * 26, 0, Math.PI * 2);
     ctx.stroke();
+  }
+
+  // ping do resultado da busca (anel escuro por 3s)
+  if (lv.searchPing) {
+    if (ts - lv.searchPing.born > 3000) lv.searchPing = null;
+    else {
+      const p = lvProject(lv.searchPing.lat, lv.searchPing.lng, R);
+      if (p.z > 0.02) {
+        const k = ((ts - lv.searchPing.born) % 1000) / 1000;
+        ctx.strokeStyle = `rgba(32, 34, 35, ${(0.7 * (1 - k)).toFixed(2)})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(cx + p.x, cy + p.y, 4 + k * 18, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
   }
 }
 
 initGlobe();
+
+/* ---------- Live View: dados, cards e controles ---------- */
+
+function lvCountryName(cc) {
+  if (!cc || cc === '??') return 'Desconhecido';
+  try { return new Intl.DisplayNames(['pt-BR'], { type: 'region' }).of(cc) || cc; } catch { return cc; }
+}
+
+function lvSpark(series, color) {
+  const idx = Object.keys(series || {}).map(Number);
+  const upto = Math.max(Math.floor((Date.now() - new Date().setHours(0, 0, 0, 0)) / 1800000), 4);
+  const vals = [];
+  for (let i = 0; i <= upto; i++) vals.push((series && series[i]) || 0);
+  const max = Math.max(...vals, 1);
+  const W = 88;
+  const H = 30;
+  const pts = vals.map((v, i) => `${((i / Math.max(1, vals.length - 1)) * W).toFixed(1)},${(H - 3 - (v / max) * (H - 8)).toFixed(1)}`);
+  const line = pts.join(' ');
+  const area = `0,${H} ${line} ${W},${H}`;
+  const flat = idx.length === 0;
+  return `<svg class="lv-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    ${flat ? '' : `<polygon points="${area}" fill="${color}" opacity="0.12"></polygon>`}
+    <polyline points="${flat ? `0,${H - 4} ${W},${H - 4}` : line}" fill="none" stroke="${color}" stroke-width="1.6" stroke-dasharray="${flat ? '3 3' : 'none'}" opacity="${flat ? 0.45 : 1}"></polyline>
+  </svg>`;
+}
+
+function lvRenderCards(d) {
+  const box = $('lvCards');
+  if (!box) return;
+  const beh = d.behavior || {};
+  const nvr = d.newVsReturning || {};
+  const totNvr = (nvr.novos || 0) + (nvr.recorrentes || 0);
+  const locMax = Math.max(...(d.byLocation || []).map((l) => l.sessions), 1);
+  const prodMax = Math.max(...(d.byProduct || []).map((p) => p.value), 1);
+
+  let donut = `<div class="lv-empty">Nenhum dado para este período</div>`;
+  if (totNvr > 0) {
+    const fracN = (nvr.novos || 0) / totNvr;
+    const C = 2 * Math.PI * 26;
+    donut = `<div class="lv-donut">
+      <svg width="76" height="76" viewBox="0 0 76 76">
+        <circle cx="38" cy="38" r="26" fill="none" stroke="#e1e3e5" stroke-width="12"></circle>
+        <circle cx="38" cy="38" r="26" fill="none" stroke="#29b2e5" stroke-width="12"
+          stroke-dasharray="${(C * fracN).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 38 38)" stroke-linecap="butt"></circle>
+      </svg>
+      <div class="lv-donut-legend">
+        <div><i style="background:#29b2e5"></i>Novos · <strong>${fmtInt(nvr.novos || 0)}</strong></div>
+        <div><i style="background:#e1e3e5"></i>Recorrentes · <strong>${fmtInt(nvr.recorrentes || 0)}</strong></div>
+      </div>
+    </div>`;
+  }
+
+  box.innerHTML = `
+    <div class="lv-card"><h4>Visitantes agora</h4><div class="lv-kpi"><span class="lv-val">${fmtInt(d.visitorsNow || 0)}</span></div></div>
+    <div class="lv-card"><h4 class="u">Total de vendas</h4><div class="lv-kpi"><span class="lv-val">${fmtMoney(d.sales || 0)}<small>—</small></span>${lvSpark(d.salesSeries, '#4d8df0')}</div></div>
+    <div class="lv-card"><h4 class="u">Sessões</h4><div class="lv-kpi"><span class="lv-val">${fmtInt(d.sessionsToday || 0)}<small>—</small></span>${lvSpark(d.sessionSeries, '#4d8df0')}</div></div>
+    <div class="lv-card"><h4 class="u">Pedidos</h4><div class="lv-kpi"><span class="lv-val">${fmtInt(d.orders || 0)}<small>—</small></span>${lvSpark(d.orderSeries, '#4d8df0')}</div></div>
+
+    <div class="lv-card wide"><h4>Comportamento do cliente</h4>
+      <div class="lv-behavior">
+        <div><div class="b-label">Carrinhos ativos</div><div class="b-val">${fmtInt(beh.carts || 0)}</div></div>
+        <div><div class="b-label">No checkout</div><div class="b-val">${fmtInt(beh.checkout || 0)}</div></div>
+        <div><div class="b-label">Comprado</div><div class="b-val">${fmtInt(beh.purchased || 0)}</div></div>
+      </div>
+    </div>
+
+    <div class="lv-card wide"><h4>Sessões por local</h4>
+      ${(d.byLocation || []).length
+        ? d.byLocation.map((l) => `<div class="lv-locrow">
+            <div class="l-name">${esc([lvCountryName(l.cc), l.reg, l.city].filter(Boolean).join(' · '))}</div>
+            <div class="l-bar" style="width:${Math.max(6, (l.sessions / locMax) * 100)}%"></div>
+            <div class="l-val">${fmtInt(l.sessions)}</div>
+          </div>`).join('')
+        : '<div class="lv-empty">Nenhuma sessão hoje ainda</div>'}
+    </div>
+
+    <div class="lv-card wide"><h4>Clientes novos x recorrentes</h4>${donut}</div>
+
+    <div class="lv-card wide"><h4>Total de vendas por produto</h4>
+      ${(d.byProduct || []).length
+        ? d.byProduct.map((p) => `<div class="lv-prodrow">
+            <span class="p-name" title="${esc(p.title)}">${esc(p.title)}</span>
+            <span class="p-bar-wrap"><span class="p-bar" style="width:${Math.max(4, (p.value / prodMax) * 100)}%"></span></span>
+            <span class="p-val">${fmtMoney(p.value)}</span>
+          </div>`).join('')
+        : '<div class="lv-empty">Nenhum dado para este período</div>'}
+    </div>`;
+}
+
+async function lvLoad() {
+  if (state.tab !== 'command' || !$('lvRoot')) return;
+  try {
+    const d = await api(`/api/liveview?store=${state.store}`);
+    lv.data = d;
+    globe.points = (d.orderPoints || []).map((p) => ({ lat: p.lat, lng: p.lng, t: new Date(p.t).getTime() }));
+    lv.visitors = d.visitorPoints || [];
+    lvRenderCards(d);
+    if (lv.mode === 'map' && lv.map) lvRenderMarkers();
+  } catch { /* mantém o último estado */ }
+}
+setInterval(lvLoad, 15000);
+
+function lvEnsureLeaflet() {
+  if (window.L) return Promise.resolve();
+  if (!lv.leafletLoading) {
+    lv.leafletLoading = new Promise((ok, bad) => {
+      const c = document.createElement('link');
+      c.rel = 'stylesheet';
+      c.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      document.head.appendChild(c);
+      const s = document.createElement('script');
+      s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      s.onload = ok;
+      s.onerror = () => bad(new Error('Não consegui carregar o mapa (Leaflet).'));
+      document.head.appendChild(s);
+    });
+  }
+  return lv.leafletLoading;
+}
+
+function lvInitMapOnce() {
+  if (lv.map) return;
+  lv.map = L.map('lvMap', { zoomControl: false, worldCopyJump: true, minZoom: 2, maxZoom: 18 }).setView([15, -25], 3);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OpenStreetMap &copy; CARTO',
+    subdomains: 'abcd',
+  }).addTo(lv.map);
+  lv.mapLayer = L.layerGroup().addTo(lv.map);
+}
+
+function lvRenderMarkers() {
+  if (!lv.map || !lv.mapLayer) return;
+  lv.mapLayer.clearLayers();
+  for (const v of lv.visitors) {
+    L.circleMarker([v.lat, v.lng], { radius: 6, color: '#fff', weight: 2, fillColor: '#3d8df5', fillOpacity: 0.95 })
+      .bindTooltip(`Visitante agora${v.city ? ' · ' + esc(v.city) : ''}`)
+      .addTo(lv.mapLayer);
+  }
+  for (const p of (lv.data && lv.data.orderPoints) || []) {
+    L.circleMarker([p.lat, p.lng], { radius: 7, color: '#fff', weight: 2, fillColor: '#8051ff', fillOpacity: 0.95 })
+      .bindTooltip(`Pedido ${esc(p.number || '')} · ${fmtMoney(p.total || 0)}${p.city ? ' · ' + esc(p.city) : ''}`)
+      .addTo(lv.mapLayer);
+  }
+}
+
+const LV_ICON_MAP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.106 5.553a2 2 0 0 0 1.788 0l3.659-1.83A1 1 0 0 1 21 4.619v12.764a1 1 0 0 1-.553.894l-4.553 2.277a2 2 0 0 1-1.788 0l-4.212-2.106a2 2 0 0 0-1.788 0l-3.659 1.83A1 1 0 0 1 3 19.381V6.618a1 1 0 0 1 .553-.894l4.553-2.277a2 2 0 0 1 1.788 0z"/><path d="M15 5.764v15"/><path d="M9 3.236v15"/></svg>';
+const LV_ICON_GLOBE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>';
+
+async function lvSetMode(mode) {
+  if (mode === lv.mode) return;
+  if (mode === 'map') {
+    try { await lvEnsureLeaflet(); } catch (e) { showLojaToast('🗺 Mapa', e.message); return; }
+    lv.mode = 'map';
+    $('lvMap').hidden = false;
+    $('lvGlobe').style.visibility = 'hidden';
+    $('lvMode').innerHTML = LV_ICON_GLOBE;
+    lvInitMapOnce();
+    setTimeout(() => { lv.map.invalidateSize(); lvRenderMarkers(); }, 60);
+  } else {
+    lv.mode = 'globe';
+    $('lvMap').hidden = true;
+    $('lvGlobe').style.visibility = '';
+    $('lvMode').innerHTML = LV_ICON_MAP;
+  }
+}
+
+function lvGoTo(lat, lng, label) {
+  if (lv.mode === 'map' && lv.map) {
+    lv.map.flyTo([lat, lng], 6, { duration: 1.4 });
+    L.popup({ closeButton: false, autoClose: true }).setLatLng([lat, lng]).setContent(esc(label || '')).openOn(lv.map);
+  } else {
+    lv.rotTarget = (-lng * Math.PI) / 180;
+    lv.tiltTarget = Math.max(-1.2, Math.min(1.2, (lat * Math.PI) / 180));
+    lv.searchPing = { lat, lng, born: performance.now() };
+  }
+}
+
+async function lvSearchPlaces(q) {
+  const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=5&accept-language=pt-BR&q=${encodeURIComponent(q)}`);
+  if (!res.ok) throw new Error('Busca indisponível.');
+  return res.json();
+}
+
+function lvInit() {
+  const root = $('lvRoot');
+  if (!root) return;
+  const canvas = $('lvGlobe');
+
+  // arrastar pra girar (com inércia) + zoom no scroll
+  canvas.addEventListener('pointerdown', (e) => {
+    lv.dragging = true;
+    lv.lastX = e.clientX;
+    lv.lastY = e.clientY;
+    lv.rotV = 0;
+    lv.rotTarget = null;
+    canvas.classList.add('dragging');
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!lv.dragging) return;
+    const dx = e.clientX - lv.lastX;
+    const dy = e.clientY - lv.lastY;
+    lv.lastX = e.clientX;
+    lv.lastY = e.clientY;
+    lv.lastDx = dx;
+    lv.rot += (dx * 0.0055) / lv.zoom;
+    lv.tilt = Math.max(-1.25, Math.min(1.25, lv.tilt - (dy * 0.004) / lv.zoom));
+  });
+  const soltar = () => {
+    if (!lv.dragging) return;
+    lv.dragging = false;
+    lv.rotV = (lv.lastDx * 0.0045) / lv.zoom;
+    canvas.classList.remove('dragging');
+  };
+  canvas.addEventListener('pointerup', soltar);
+  canvas.addEventListener('pointercancel', soltar);
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    lv.zoom = Math.max(0.55, Math.min(3.2, lv.zoom * (1 - e.deltaY * 0.0012)));
+  }, { passive: false });
+
+  $('lvZoomIn').addEventListener('click', () => {
+    if (lv.mode === 'map' && lv.map) lv.map.zoomIn();
+    else lv.zoom = Math.min(3.2, lv.zoom * 1.25);
+  });
+  $('lvZoomOut').addEventListener('click', () => {
+    if (lv.mode === 'map' && lv.map) lv.map.zoomOut();
+    else lv.zoom = Math.max(0.55, lv.zoom / 1.25);
+  });
+
+  $('lvEye').addEventListener('click', () => {
+    const cards = $('lvCards');
+    cards.classList.toggle('hidden');
+    $('lvEye').classList.toggle('active', cards.classList.contains('hidden'));
+  });
+  $('lvMode').addEventListener('click', () => lvSetMode(lv.mode === 'globe' ? 'map' : 'globe'));
+  $('lvFull').addEventListener('click', () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else root.requestFullscreen && root.requestFullscreen();
+  });
+  document.addEventListener('fullscreenchange', () => {
+    if (lv.map) setTimeout(() => lv.map.invalidateSize(), 120);
+  });
+
+  // busca de local (Enter ou pausa na digitação)
+  const inp = $('lvSearch');
+  const results = $('lvSearchResults');
+  let timer = null;
+  const buscar = async () => {
+    const q = inp.value.trim();
+    if (q.length < 2) { results.hidden = true; return; }
+    try {
+      const places = await lvSearchPlaces(q);
+      if (!places.length) { results.innerHTML = '<button disabled>Nenhum local encontrado</button>'; results.hidden = false; return; }
+      results.innerHTML = places.map((p, i) => `<button data-i="${i}">${esc(p.display_name.split(',').slice(0, 3).join(','))}</button>`).join('');
+      results.hidden = false;
+      results.querySelectorAll('button[data-i]').forEach((b) => b.addEventListener('click', () => {
+        const p = places[Number(b.dataset.i)];
+        results.hidden = true;
+        inp.value = p.display_name.split(',')[0];
+        lvGoTo(parseFloat(p.lat), parseFloat(p.lon), p.display_name.split(',')[0]);
+      }));
+    } catch { results.hidden = true; }
+  };
+  inp.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(buscar, 600); });
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(timer); buscar(); } });
+  document.addEventListener('click', (e) => { if (!e.target.closest('.lv-search')) results.hidden = true; });
+
+  lvRenderCards({ behavior: {}, byLocation: [], byProduct: [], newVsReturning: {} });
+  lvLoad();
+}
+
+lvInit();
 
 /* ---------- inicialização ---------- */
 
@@ -2360,10 +2705,174 @@ function renderDetailOrders(orders) {
   </tr>`).join('');
 }
 
+/* ---------- aba Tracking (Facebook Pixel/CAPI + Google Ads) ---------- */
+
+// snippet de Pixel personalizado (Customer Events) pra colar na LOJA DE CHECKOUT.
+// Pixel no TEMA não roda nas páginas de checkout — só Customer Events roda lá.
+function trackingSnippet(c) {
+  const L = [];
+  L.push('// ===== Pixel de compra — gerado pelo Painel Contingência =====');
+  L.push('// Cole na LOJA DE CHECKOUT: Configurações → Eventos de cliente →');
+  L.push('// "Adicionar pixel personalizado" → cole tudo → Salvar → Conectar.');
+  L.push('');
+  if (c.fbPixelId) {
+    L.push("!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');");
+    L.push("fbq('init', '" + c.fbPixelId + "');");
+    L.push("fbq('track', 'PageView');");
+    L.push('');
+  }
+  if (c.gadsId) {
+    L.push("var _gs = document.createElement('script'); _gs.async = true;");
+    L.push("_gs.src = 'https://www.googletagmanager.com/gtag/js?id=" + c.gadsId + "';");
+    L.push('document.head.appendChild(_gs);');
+    L.push('window.dataLayer = window.dataLayer || [];');
+    L.push('function gtag(){ dataLayer.push(arguments); }');
+    L.push("gtag('js', new Date());");
+    L.push("gtag('config', '" + c.gadsId + "');");
+    L.push('');
+  }
+  L.push("analytics.subscribe('checkout_completed', function (event) {");
+  L.push('  var c = event.data.checkout;');
+  L.push('  var value = Number((c.totalPrice && c.totalPrice.amount) || 0);');
+  L.push("  var currency = (c.totalPrice && c.totalPrice.currencyCode) || 'BRL';");
+  L.push("  var raw = String((c.order && c.order.id) || c.token || '');");
+  L.push("  var orderId = (raw.split('/').pop() || raw).replace(/[^0-9]/g, '') || raw;");
+  if (c.fbPixelId) {
+    L.push("  // eventID 'shp_<pedido>' = mesmo id que o painel manda via CAPI → o Meta deduplica");
+    L.push("  fbq('track', 'Purchase', { value: value, currency: currency }, { eventID: 'shp_' + orderId });");
+  }
+  if (c.gadsId && c.gadsLabel) {
+    L.push("  gtag('event', 'conversion', { send_to: '" + c.gadsId + '/' + c.gadsLabel + "', value: value, currency: currency, transaction_id: orderId });");
+  }
+  L.push('});');
+  return L.join('\n');
+}
+
+async function loadTrackingPanel() {
+  const panel = document.querySelector('#lojasDetail .dpanel[data-dpanel="tracking"]');
+  if (!panel) return;
+  panel.innerHTML = '<div class="placeholder-empty"><span class="pe-ico">📊</span><div class="pe-title">Carregando…</div><div>Buscando a configuração de tracking.</div></div>';
+  let data;
+  try {
+    data = await api('/api/tracking');
+  } catch (e) {
+    panel.innerHTML = `<div class="placeholder-empty"><span class="pe-ico">⚠️</span><div class="pe-title">Erro ao carregar</div><div>${esc(e.message)}</div></div>`;
+    return;
+  }
+  renderTrackingPanel(panel, data);
+}
+
+function renderTrackingPanel(panel, data) {
+  const c = data.config || {};
+  const run = data.lastCapiRun;
+  const snippet = trackingSnippet(c);
+  const temIds = !!(c.fbPixelId || c.gadsId);
+  const runInfo = run
+    ? `Último disparo: ${timeAgo(run.at)} · <strong>${fmtInt(run.enviados || 0)}</strong> enviado${(run.enviados || 0) === 1 ? '' : 's'}, ${fmtInt(run.jaEnviados || 0)} já marcados${(run.erros && run.erros.length) ? ` · <span style="color:var(--warn)">${esc(run.erros[0])}</span>` : ''}`
+    : 'Nenhum disparo ainda.';
+
+  panel.innerHTML = `
+  <div class="card">
+    <div class="card-head"><h2>Pixels &amp; IDs</h2><span class="card-sub">Vale para o funil inteiro: vitrine + lojas de checkout</span></div>
+    <p class="hint">A compra acontece na <strong>loja de checkout</strong>, então pixel colado no tema não marca venda — o fluxo certo tem 3 camadas: vitrine (automática, via script do painel), checkout (snippet abaixo) e servidor (CAPI, fura adblock).</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px">
+      <div><label class="field-label">Facebook Pixel ID</label><input id="tkFbPixel" class="control" style="width:100%" placeholder="ex.: 1234567890123456" value="${esc(c.fbPixelId || '')}"></div>
+      <div><label class="field-label">Facebook CAPI Token ${c.fbCapiTokenSet ? '<span style="color:var(--ok,#22c55e)">· salvo ✓</span>' : ''}</label><input id="tkFbToken" class="control" style="width:100%" type="password" placeholder="${c.fbCapiTokenSet ? 'mantido — digite pra trocar' : 'token da API de Conversões'}"></div>
+      <div><label class="field-label">Google Ads ID</label><input id="tkGadsId" class="control" style="width:100%" placeholder="ex.: AW-123456789" value="${esc(c.gadsId || '')}"></div>
+      <div><label class="field-label">Google Ads Conversion Label</label><input id="tkGadsLabel" class="control" style="width:100%" placeholder="ex.: AbCdEfGhIj0KLmNoPq" value="${esc(c.gadsLabel || '')}"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;margin-top:14px;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px"><input type="checkbox" id="tkEnabled" ${c.enabled ? 'checked' : ''}> Tracking ligado</label>
+      <button class="control btn-primary" id="tkSave">Salvar configuração</button>
+      <span id="tkSaveMsg" class="hint" style="margin:0"></span>
+    </div>
+    <p class="hint" style="margin-top:10px">CAPI Token: Gerenciador de Eventos do Meta → seu Pixel → Configurações → <strong>API de Conversões → Gerar token</strong>. Google: Metas → Conversão de compra → "Usar a tag do Google" → copie o ID (AW-…) e o rótulo.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Passo 1 — Vitrine</h2><span class="card-sub">Automático, nada a fazer</span></div>
+    <p class="hint">${c.enabled && temIds
+      ? 'O script do painel (redirect.js) já injeta o Pixel e a tag do Google na vitrine: PageView, ViewContent e InitiateCheckout no clique de comprar (com espera pro evento sair antes do redirect). O fbclid/gclid fica salvo em cookie do domínio raiz — o checkout, por ser subdomínio, enxerga e atribui a venda à campanha. <strong>Importante:</strong> se o Pixel do Facebook também estiver instalado no tema/apps da vitrine, remova de lá pra não duplicar eventos.'
+      : 'Preencha os IDs acima, ligue o tracking e salve — o script da vitrine passa a injetar os pixels sozinho (propaga em ~1 min).'}</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Passo 2 — Loja de checkout</h2><span class="card-sub">Colar 1x em cada loja de checkout do pool</span></div>
+    <p class="hint">Admin da loja de checkout → <strong>Configurações → Eventos de cliente → Adicionar pixel personalizado</strong> → dê um nome (ex.: "Pixel Painel") → cole o código → Salvar → <strong>Conectar</strong>. É isso que marca a <strong>compra</strong> no navegador.</p>
+    ${temIds
+      ? `<div style="position:relative"><button class="control sm" id="tkCopy" style="position:absolute;top:8px;right:8px">📋 Copiar</button><pre id="tkSnippet" style="background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:14px;font-size:11.5px;line-height:1.5;overflow:auto;max-height:340px;white-space:pre;font-family:Consolas,monospace">${esc(snippet)}</pre></div>`
+      : '<p class="hint">Preencha e salve os IDs acima pra gerar o código.</p>'}
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Passo 3 — CAPI (servidor)</h2><span class="card-sub">Purchase direto pro Meta, mesmo com adblock</span></div>
+    <p class="hint">O painel varre os pedidos pagos das lojas de checkout e manda cada compra pra API de Conversões do Meta, deduplicada com o pixel do navegador. Roda junto com o cron (a cada ~5 min) e você pode disparar na mão:</p>
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <button class="control btn-primary" id="tkCapiRun" ${(c.enabled && c.fbPixelId && c.fbCapiTokenSet) ? '' : 'disabled title="Precisa de Pixel ID + CAPI Token, com tracking ligado"'}>Disparar CAPI agora</button>
+      <span class="hint" style="margin:0" id="tkCapiInfo">${runInfo}</span>
+    </div>
+  </div>`;
+
+  $('tkSave').addEventListener('click', async () => {
+    const msg = $('tkSaveMsg');
+    msg.textContent = 'Salvando…';
+    const body = {
+      enabled: $('tkEnabled').checked,
+      fbPixelId: $('tkFbPixel').value.trim(),
+      gadsId: $('tkGadsId').value.trim(),
+      gadsLabel: $('tkGadsLabel').value.trim(),
+    };
+    const tok = $('tkFbToken').value.trim();
+    if (tok) body.fbCapiToken = tok; // vazio = mantém o token salvo
+    try {
+      const res = await fetch('/api/tracking/config', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || `Erro ${res.status}`);
+      showLojaToast('📊 Tracking', 'Configuração salva. O script da vitrine atualiza em ~1 min.');
+      loadTrackingPanel();
+    } catch (e) {
+      msg.textContent = e.message;
+    }
+  });
+
+  const copyBtn = $('tkCopy');
+  if (copyBtn) copyBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(snippet);
+      copyBtn.textContent = '✓ Copiado';
+      setTimeout(() => { copyBtn.textContent = '📋 Copiar'; }, 2000);
+    } catch {
+      showLojaToast('⚠️ Copiar', 'Não consegui copiar — selecione o código e copie com Ctrl+C.');
+    }
+  });
+
+  const capiBtn = $('tkCapiRun');
+  if (capiBtn) capiBtn.addEventListener('click', async () => {
+    capiBtn.disabled = true;
+    $('tkCapiInfo').textContent = 'Disparando…';
+    try {
+      const res = await fetch('/api/tracking/capi/run', { method: 'POST' });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || `Erro ${res.status}`);
+      if (d.skipped) {
+        $('tkCapiInfo').textContent = d.reason || 'Nada a enviar.';
+      } else {
+        showLojaToast('🚀 CAPI', `${fmtInt(d.enviados || 0)} compra${(d.enviados || 0) === 1 ? '' : 's'} enviada${(d.enviados || 0) === 1 ? '' : 's'} pro Meta.`);
+        loadTrackingPanel();
+      }
+    } catch (e) {
+      $('tkCapiInfo').textContent = e.message;
+    } finally {
+      capiBtn.disabled = false;
+    }
+  });
+}
+
 const DPANEL_PLACEHOLDER = {
   colecoes: ['🗂', 'Coleções', 'Organize coleções e categorias espelhadas. Em breve nesta build.'],
   tema: ['🎨', 'Tema', 'Personalize e clone o tema da loja-modelo. Em breve.'],
-  tracking: ['📊', 'Tracking', 'Pixels, UTMs e eventos de conversão. Configuração de tracking em breve.'],
   cloaker: ['🛡', 'Cloaker', 'Regras de camuflagem e proteção de campanhas. Em breve.'],
   webhooks: ['🔗', 'Webhooks', 'Automatize eventos da loja via webhooks. Em breve.'],
   config: ['⚙️', 'Configuração', 'Ajustes de moeda, sincronização e credenciais da loja. Em breve.'],
@@ -2507,6 +3016,7 @@ function setDetailTab(tab) {
   document.querySelectorAll('#lojasDetail .dpanel').forEach((p) => { p.hidden = p.dataset.dpanel !== tab; });
   if (tab === 'produtos' && lojas.detailId) loadStoreProducts(lojas.detailId);
   if (tab === 'mapeamento' && lojas.detailId) loadStoreMapping(lojas.detailId);
+  if (tab === 'tracking') loadTrackingPanel();
   const ph = DPANEL_PLACEHOLDER[tab];
   if (ph) {
     const panel = document.querySelector(`#lojasDetail .dpanel[data-dpanel="${tab}"]`);

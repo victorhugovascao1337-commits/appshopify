@@ -88,7 +88,8 @@ app.use((req, res, next) => {
    *   quem vê a vitrine já vê os produtos), nunca token, pedido ou faturamento.
    */
   if (LOGIN_PATHS.has(req.path) || req.path.startsWith('/api/cron/') ||
-      req.path === '/api/oauth/callback' || req.path === '/redirect.js' || req.path === '/api/resolve') return next();
+      req.path === '/api/oauth/callback' || req.path === '/redirect.js' || req.path === '/api/resolve' ||
+      req.path === '/api/beacon') return next(); // beacon: ping anônimo de presença vindo da vitrine (sem dado sensível)
   // arquivos estáticos (css/js/fontes/imagens) são públicos: a própria tela de login
   // precisa deles e não contêm segredo — as APIs continuam exigindo o cookie.
   if (/\.(css|js|mjs|woff2?|ttf|otf|png|jpe?g|svg|gif|ico|webp|map)$/i.test(req.path)) return next();
@@ -234,7 +235,7 @@ async function fetchOrders(store, createdAtMin, createdAtMax) {
     limit: '250',
     created_at_min: createdAtMin.toISOString(),
     created_at_max: createdAtMax.toISOString(),
-    fields: 'id,name,created_at,total_price,currency,cancelled_at,test,financial_status,line_items,shipping_address',
+    fields: 'id,name,created_at,total_price,currency,cancelled_at,test,financial_status,line_items,shipping_address,customer',
   });
   let endpoint = `orders.json?${params}`;
   const orders = [];
@@ -261,6 +262,8 @@ async function fetchOrders(store, createdAtMin, createdAtMax) {
           qty: li.quantity,
           price: parseFloat(li.price) || 0,
         })),
+        // orders_count do cliente na hora do pedido: 1 = novo, >1 = recorrente
+        customerOrders: o.customer && o.customer.orders_count != null ? Number(o.customer.orders_count) : null,
       });
     }
     if (!nextUrl) return { orders, truncated };
@@ -1574,6 +1577,7 @@ app.post('/api/post-purchase/run', async (req, res) => {
 if (require.main === module) {
   setInterval(() => {
     runPostPurchaseCycle().catch(() => {});
+    runCapiCycle().catch(() => {});
   }, 60000);
 }
 
@@ -1592,10 +1596,196 @@ app.all('/api/cron/post-purchase', async (req, res) => {
   }
   try {
     const r = await runPostPurchaseCycle();
-    res.json({ ok: true, at: new Date().toISOString(), ...r });
+    // aproveita o mesmo cron (GitHub Actions a cada 5 min) pra despachar o CAPI
+    let tracking = null;
+    try { tracking = await runCapiCycle(); } catch (e2) { tracking = { error: e2.message }; }
+    res.json({ ok: true, at: new Date().toISOString(), ...r, tracking });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+/* ---------- Tracking: Facebook Pixel/CAPI + Google Ads ----------
+ *
+ * O funil tem duas lojas: o anúncio cai na VITRINE, mas a COMPRA acontece na
+ * loja de CHECKOUT — e script de tema não roda nas páginas de checkout.
+ * Três peças fecham o ciclo:
+ *  1. Vitrine  → o próprio /redirect.js injeta Pixel + gtag (PageView/ViewContent/
+ *     InitiateCheckout) e o gclid/fbclid fica em cookie do domínio raiz, que o
+ *     checkout (subdomínio) enxerga.
+ *  2. Checkout → snippet de "pixel personalizado" (Customer Events) gerado na aba
+ *     Tracking do painel, colado uma vez na loja de checkout: dispara Purchase (FB)
+ *     e a conversão (Google Ads) no navegador, na hora da compra.
+ *  3. Servidor → CAPI (Conversions API do Meta): cada pedido pago vai direto pro
+ *     Meta mesmo com adblock, deduplicado com o navegador pelo event_id 'shp_<id>'.
+ */
+
+const TRACKING_DEFAULTS = { enabled: false, fbPixelId: '', fbCapiToken: '', gadsId: '', gadsLabel: '' };
+const CAPI_LOOKBACK_DAYS = 6;   // o Meta só aceita eventos de até 7 dias
+const CAPI_MAX_PER_STORE = 100; // trava de segurança por ciclo
+
+async function loadTrackingConfig() {
+  return { ...TRACKING_DEFAULTS, ...((await db.readDoc('tracking', {})) || {}) };
+}
+async function saveTrackingConfig(t) {
+  return db.writeDoc('tracking', t);
+}
+
+const capiHash = (v) => crypto.createHash('sha256').update(v).digest('hex');
+function capiField(v, digitsOnly) {
+  v = String(v == null ? '' : v).trim().toLowerCase();
+  if (digitsOnly) v = v.replace(/\D/g, '');
+  return v ? [capiHash(v)] : undefined;
+}
+
+// pedidos pagos recentes com os campos que o evento Purchase precisa
+async function fetchOrdersForCapi(store, since) {
+  const params = new URLSearchParams({
+    status: 'any',
+    financial_status: 'paid',
+    limit: '250',
+    created_at_min: since.toISOString(),
+    fields: 'id,created_at,total_price,currency,email,phone,test,cancelled_at,landing_site,client_details,billing_address',
+  });
+  let endpoint = `orders.json?${params}`;
+  const out = [];
+  for (let page = 0; page < MAX_PAGES_PER_STORE; page++) {
+    const { data, nextUrl } = await shopifyFetch(store, endpoint);
+    for (const o of data.orders || []) {
+      if (o.test || o.cancelled_at) continue;
+      out.push(o);
+    }
+    if (!nextUrl) break;
+    endpoint = nextUrl;
+  }
+  return out;
+}
+
+// monta o evento Purchase (user_data com hash SHA-256, como o Meta exige)
+function capiEventFromOrder(order, store) {
+  const created = new Date(order.created_at);
+  const b = order.billing_address || {};
+  const cd = order.client_details || {};
+  const ud = {
+    em: capiField(order.email),
+    ph: capiField(order.phone || b.phone, true),
+    fn: capiField(b.first_name),
+    ln: capiField(b.last_name),
+    ct: capiField(String(b.city || '').replace(/\s+/g, '')),
+    zp: capiField(b.zip, true),
+    country: capiField(b.country_code),
+    external_id: [capiHash(String(order.id))],
+  };
+  if (cd.browser_ip) ud.client_ip_address = cd.browser_ip;
+  if (cd.user_agent) ud.client_user_agent = cd.user_agent;
+  // o fbclid chega ao checkout pela URL (keepParams) e a Shopify guarda no landing_site
+  try {
+    const q = new URL(order.landing_site, `https://${store.domain}`).searchParams;
+    const fbclid = q.get('fbclid');
+    if (fbclid) ud.fbc = `fb.1.${created.getTime()}.${fbclid}`;
+  } catch { /* sem landing_site utilizável */ }
+  for (const k of Object.keys(ud)) if (ud[k] === undefined) delete ud[k];
+  return {
+    event_name: 'Purchase',
+    event_time: Math.floor(created.getTime() / 1000),
+    event_id: `shp_${order.id}`, // mesmo id do snippet do checkout → o Meta deduplica navegador × servidor
+    action_source: 'website',
+    event_source_url: `https://${store.domain}`,
+    user_data: ud,
+    custom_data: { currency: order.currency || 'BRL', value: Number(order.total_price || 0), order_id: String(order.id) },
+  };
+}
+
+async function sendCapiBatch(t, events) {
+  const res = await fetch(`https://graph.facebook.com/v21.0/${encodeURIComponent(t.fbPixelId)}/events`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data: events, access_token: t.fbCapiToken }),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || json.error) {
+    throw new Error((json.error && json.error.message) || `Meta respondeu ${res.status}`);
+  }
+  return json;
+}
+
+// um ciclo: pedidos pagos novos das lojas de checkout → Purchase via CAPI
+async function runCapiCycle() {
+  const t = await loadTrackingConfig();
+  if (!t.enabled || !t.fbPixelId || !t.fbCapiToken) return { skipped: true, reason: 'CAPI não configurado (precisa de Pixel ID + token).' };
+  let ctx;
+  try { ctx = await ensureFlowConfig(); } catch { return { skipped: true, reason: 'Flow não configurado.' }; }
+
+  const sent = (await db.readDoc('capi_sent', {})) || {};
+  const cutoff = Date.now() - 30 * 86400000; // esquece marcações com mais de 30 dias
+  for (const k of Object.keys(sent)) if (sent[k] < cutoff) delete sent[k];
+
+  const since = new Date(Date.now() - CAPI_LOOKBACK_DAYS * 86400000);
+  let enviados = 0;
+  let jaEnviados = 0;
+  const erros = [];
+  for (const store of ctx.pool) {
+    let orders = [];
+    try { orders = await fetchOrdersForCapi(store, since); } catch (e) { erros.push(`${store.name}: ${e.message}`.slice(0, 140)); continue; }
+    const novos = orders.filter((o) => !sent[`o${o.id}`]).slice(0, CAPI_MAX_PER_STORE);
+    jaEnviados += orders.length - novos.length;
+    if (!novos.length) continue;
+    try {
+      await sendCapiBatch(t, novos.map((o) => capiEventFromOrder(o, store)));
+      for (const o of novos) sent[`o${o.id}`] = Date.now();
+      enviados += novos.length;
+    } catch (e) {
+      erros.push(`${store.name}: ${e.message}`.slice(0, 160)); // não marca como enviado → tenta de novo no próximo ciclo
+    }
+  }
+  await db.writeDoc('capi_sent', sent);
+  const resumo = { at: new Date().toISOString(), enviados, jaEnviados, erros };
+  const fresh = await loadTrackingConfig();
+  fresh.lastCapiRun = resumo;
+  await saveTrackingConfig(fresh);
+  return resumo;
+}
+
+/* ---------- APIs do painel (aba Tracking) ---------- */
+
+function publicTracking(t) {
+  return {
+    enabled: !!t.enabled,
+    fbPixelId: t.fbPixelId || '',
+    gadsId: t.gadsId || '',
+    gadsLabel: t.gadsLabel || '',
+    fbCapiTokenSet: !!t.fbCapiToken, // o token nunca volta pro navegador
+  };
+}
+
+app.get('/api/tracking', async (req, res) => {
+  try {
+    const t = await loadTrackingConfig();
+    res.json({ config: publicTracking(t), lastCapiRun: t.lastCapiRun || null });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/tracking/config', async (req, res) => {
+  try {
+    const t = await loadTrackingConfig();
+    const b = req.body || {};
+    if (typeof b.enabled === 'boolean') t.enabled = b.enabled;
+    if (typeof b.fbPixelId === 'string') t.fbPixelId = b.fbPixelId.replace(/\D/g, '').slice(0, 20);
+    if (typeof b.gadsId === 'string') {
+      const g = b.gadsId.trim().toUpperCase().replace(/\s/g, '');
+      t.gadsId = g ? `AW-${g.replace(/^AW-?/, '')}` : '';
+    }
+    if (typeof b.gadsLabel === 'string') t.gadsLabel = b.gadsLabel.trim();
+    if (typeof b.fbCapiToken === 'string') t.fbCapiToken = b.fbCapiToken.trim(); // string vazia limpa o token
+    await saveTrackingConfig(t);
+    res.json({ ok: true, config: publicTracking(t) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/tracking/capi/run', async (req, res) => {
+  try { res.json({ ok: true, ...(await runCapiCycle()) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 /* ---------- Mapeamento de produtos: vitrine → loja de checkout ----------
@@ -2117,7 +2307,8 @@ async function buildCheckoutUrl(store, variantId) {
 
 /* ---------- 1. o script que roda na loja do cliente ---------- */
 
-function buildStorefrontScript(panelUrl, cfg) {
+function buildStorefrontScript(panelUrl, cfg, tracking) {
+  const tk = tracking || {};
   // sem template literal aninhado: o script vai como texto puro para o navegador do cliente
   return `/* Painel Contingência — redirect vitrine → checkout */
 (function () {
@@ -2125,6 +2316,9 @@ function buildStorefrontScript(panelUrl, cfg) {
   var MODE = ${JSON.stringify(cfg.mode)};
   var KEEP = ${JSON.stringify(!!cfg.keepParams)};
   var TRIGGER = ${JSON.stringify(cfg.trigger === 'load' ? 'load' : 'click')};
+  var TRACK = ${JSON.stringify(!!tk.enabled)};
+  var FBPX = ${JSON.stringify(tk.fbPixelId || '')};
+  var GADS = ${JSON.stringify(tk.gadsId || '')};
 
   try {
     if (!window.Shopify || !window.Shopify.shop) return;
@@ -2135,6 +2329,73 @@ function buildStorefrontScript(panelUrl, cfg) {
     var handle = m ? m[1] : null;
     var ehCarrinho = /\\/cart/.test(location.pathname);
     var ehProdutoOuCarrinho = !!handle || ehCarrinho;     // modo "ao abrir" só age aqui; modo "ao clicar" age em QUALQUER página (home, coleção, produto em destaque, etc.)
+
+    /* ---- Tracking na vitrine (Facebook Pixel + Google Ads) ----
+       Configurado na aba Tracking do painel. Se o tema já tiver o Pixel
+       (window.fbq existe), não inicializa de novo — evita evento duplicado.
+       O gtag grava o gclid em cookie do domínio raiz, que o checkout
+       (subdomínio) enxerga na hora da conversão. */
+    function initTracking() {
+      if (!TRACK) return;
+      try {
+        if (FBPX && !window.fbq) {
+          !function (f, b, e, v, n, t, s) { if (f.fbq) return; n = f.fbq = function () { n.callMethod ? n.callMethod.apply(n, arguments) : n.queue.push(arguments); }; if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0'; n.queue = []; t = b.createElement(e); t.async = !0; t.src = v; s = b.getElementsByTagName(e)[0]; s.parentNode.insertBefore(t, s); }(window, document, 'script', 'https://connect.facebook.net/en_US/fbevents.js');
+          fbq('init', FBPX);
+          fbq('track', 'PageView');
+          if (handle) fbq('track', 'ViewContent');
+        }
+        if (GADS) {
+          window.dataLayer = window.dataLayer || [];
+          window.gtag = window.gtag || function () { window.dataLayer.push(arguments); };
+          if (!window.__pcGtagLoaded) {
+            window.__pcGtagLoaded = 1;
+            var gs = document.createElement('script');
+            gs.async = true;
+            gs.src = 'https://www.googletagmanager.com/gtag/js?id=' + GADS;
+            (document.head || document.documentElement).appendChild(gs);
+            gtag('js', new Date());
+          }
+          gtag('config', GADS);
+        }
+      } catch (err) { /* tracking nunca quebra a loja */ }
+    }
+    initTracking();
+
+    function trackCheckout() {
+      try { if (TRACK && FBPX && window.fbq) fbq('track', 'InitiateCheckout'); } catch (err) {}
+    }
+
+    /* ---- presença pro Live View do painel (Visitantes agora / Sessões) ----
+       Ping anônimo: só um id aleatório de sessão, sem nenhum dado do cliente.
+       A localização aproximada vem do IP, lida pelos headers no servidor. */
+    var SID = '';
+    try {
+      SID = sessionStorage.getItem('__pc_sid') || '';
+      if (!SID) { SID = Math.random().toString(36).slice(2) + Date.now().toString(36); sessionStorage.setItem('__pc_sid', SID); }
+    } catch (e0) { SID = Math.random().toString(36).slice(2); }
+    function beacon(ev) {
+      try { fetch(PANEL + '/api/beacon?sid=' + SID + '&ev=' + ev, { credentials: 'omit', keepalive: true }); } catch (e1) {}
+    }
+    try {
+      if (!sessionStorage.getItem('__pc_sv')) { sessionStorage.setItem('__pc_sv', '1'); beacon('view'); }
+      else { beacon('beat'); }
+    } catch (e2) { beacon('view'); }
+    setInterval(function () { if (!document.hidden) beacon('beat'); }, 25000);
+    // carrinho: escuta passiva (não bloqueia nada) do add-to-cart
+    var BEACON_ADD = /(add to cart|adicionar ao carrinho|añadir al carrito)/i;
+    window.addEventListener('click', function (e) {
+      try {
+        var t = e.target && e.target.closest ? e.target.closest('button, a, input[type="submit"], [role="button"]') : null;
+        if (t && BEACON_ADD.test((t.textContent || t.value || ''))) beacon('cart');
+      } catch (e3) {}
+    }, true);
+    window.addEventListener('submit', function (e) {
+      try {
+        var f = e.target;
+        var a = f && f.getAttribute ? (f.getAttribute('action') || '') : '';
+        if (/\\/cart\\/add/.test(a)) beacon('cart');
+      } catch (e4) {}
+    }, true);
 
     var qs = new URLSearchParams(location.search);
     if (qs.get('noredirect') === '1') return;             // atalho para você testar a vitrine
@@ -2268,7 +2529,13 @@ function buildStorefrontScript(panelUrl, cfg) {
     // CHAVE PRO 100%: bloqueia PRIMEIRO, depois resolve o carrinho INTEIRO (fresco)
     // e só então redireciona — assim leva todos os itens e nunca escapa pro checkout da vitrine.
     function decidir(refazerFn) {
-      resolverAgora().then(function (u) { if (u) irPara(u); else refazerFn(); });
+      beacon('checkout'); // marca "No checkout" no Live View do painel
+      resolverAgora().then(function (u) {
+        if (!u) return refazerFn();
+        trackCheckout();
+        // espera curta pro beacon do InitiateCheckout sair antes de trocar de página
+        setTimeout(function () { irPara(u); }, (TRACK && FBPX && window.fbq) ? 250 : 0);
+      });
     }
 
     /* IMPORTANTE: "Adicionar ao carrinho" NÃO redireciona — deixa abrir o carrinho
@@ -2328,11 +2595,12 @@ function buildStorefrontScript(panelUrl, cfg) {
 app.get('/redirect.js', async (req, res) => {
   try {
     const cfg = await loadRedirectConfig();
+    const tracking = await loadTrackingConfig();
     res.type('application/javascript');
     res.setHeader('Cache-Control', 'public, max-age=60'); // curto: mudanças de config propagam rápido
     res.setHeader('Access-Control-Allow-Origin', '*');
     if (!cfg.enabled) return res.send('/* redirect desligado no painel */');
-    res.send(buildStorefrontScript(appBaseUrl(req), cfg));
+    res.send(buildStorefrontScript(appBaseUrl(req), cfg, tracking));
   } catch (e) {
     res.type('application/javascript').send('/* erro ao montar o script */');
   }
@@ -2635,6 +2903,149 @@ app.get('/api/live', async (req, res) => {
         itemCount: o.items.reduce((s, it) => s + it.qty, 0),
         createdAt: o.createdAt.toISOString(),
       })),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ---------- Live View: presença da vitrine + agregado estilo Shopify ----------
+ *
+ * O redirect.js manda pings anônimos (/api/beacon) com um id de sessão:
+ *  - 'view' 1x por sessão, 'beat' a cada ~25s, 'cart' ao adicionar, 'checkout' no clique.
+ *  - A geolocalização vem dos headers da Vercel (x-vercel-ip-*), sem serviço externo.
+ * O painel lê tudo agregado em /api/liveview: visitantes agora, sessões de hoje,
+ * comportamento (carrinho/checkout/comprado), sessões por local e vendas do dia.
+ */
+
+const LIVE_PRESENCE_MIN = 5;   // "visitante agora" = ping nos últimos 5 min
+const LIVE_FLAG_MIN = 20;      // carrinho/checkout contam por 20 min
+
+app.get('/api/beacon', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const sid = String(req.query.sid || '').replace(/[^\w-]/g, '').slice(0, 40);
+    const ev = String(req.query.ev || 'beat');
+    if (!sid) return res.status(204).end();
+    const dec = (v) => { try { return decodeURIComponent(String(v || '')); } catch { return String(v || ''); } };
+    const h = req.headers;
+    const geo = {
+      cc: String(h['x-vercel-ip-country'] || '').toUpperCase() || null,
+      reg: dec(h['x-vercel-ip-country-region']) || null,
+      city: dec(h['x-vercel-ip-city']) || null,
+      lat: h['x-vercel-ip-latitude'] != null ? Number(h['x-vercel-ip-latitude']) : null,
+      lng: h['x-vercel-ip-longitude'] != null ? Number(h['x-vercel-ip-longitude']) : null,
+    };
+    const nowMs = Date.now();
+    const sess = (await db.readDoc('live_sessions', {})) || {};
+    for (const k of Object.keys(sess)) if (nowMs - (sess[k].t || 0) > 30 * 60000) delete sess[k];
+    const cur = sess[sid] || {};
+    sess[sid] = {
+      t: nowMs,
+      cc: geo.cc || cur.cc || null,
+      reg: geo.reg || cur.reg || null,
+      city: geo.city || cur.city || null,
+      lat: geo.lat != null && !Number.isNaN(geo.lat) ? geo.lat : (cur.lat != null ? cur.lat : null),
+      lng: geo.lng != null && !Number.isNaN(geo.lng) ? geo.lng : (cur.lng != null ? cur.lng : null),
+      cart: ev === 'cart' ? 1 : (cur.cart || 0),
+      ck: ev === 'checkout' ? 1 : (cur.ck || 0),
+    };
+    await db.writeDoc('live_sessions', sess);
+
+    if (ev === 'view') {
+      const today = new Date().toISOString().slice(0, 10);
+      let day = (await db.readDoc('live_day', {})) || {};
+      if (day.day !== today) day = { day: today, count: 0, sids: {}, locs: {}, series: {} };
+      if (!day.sids[sid]) {
+        day.sids[sid] = 1;
+        day.count = (day.count || 0) + 1;
+        const lk = [geo.cc || '??', geo.reg || '', geo.city || ''].join('|');
+        day.locs[lk] = (day.locs[lk] || 0) + 1;
+        const bucket = Math.floor((nowMs - Date.parse(`${today}T00:00:00Z`)) / 1800000); // fatias de 30 min
+        day.series[bucket] = (day.series[bucket] || 0) + 1;
+        if (Object.keys(day.sids).length > 8000) day.sids = {}; // trava de tamanho — mantém só a contagem
+        await db.writeDoc('live_day', day);
+      }
+    }
+    res.status(204).end();
+  } catch {
+    res.status(204).end(); // beacon nunca devolve erro pro navegador do cliente
+  }
+});
+
+app.get('/api/liveview', async (req, res) => {
+  try {
+    const { stores } = await selectStores(req);
+    const now = new Date();
+    const from = startOfDay(now);
+    let orders = [];
+    if (stores.length) {
+      const key = `liveview:${stores.map((s) => s.id).join(',')}`;
+      const results = await cached(key, 25000, () => collectOrders(stores, from, now));
+      orders = results.flatMap((r) => r.orders);
+    }
+    orders.sort((a, b) => b.createdAt - a.createdAt);
+    const m = sumMetrics(orders);
+    const nowMs = Date.now();
+
+    const sess = (await db.readDoc('live_sessions', {})) || {};
+    const vivas = Object.values(sess);
+    const ativas = vivas.filter((s) => nowMs - (s.t || 0) < LIVE_PRESENCE_MIN * 60000);
+    const carts = vivas.filter((s) => s.cart && !s.ck && nowMs - (s.t || 0) < LIVE_FLAG_MIN * 60000).length;
+    const inCheckout = vivas.filter((s) => s.ck && nowMs - (s.t || 0) < LIVE_FLAG_MIN * 60000).length;
+    const purchased = orders.filter((o) => nowMs - o.createdAt.getTime() < 10 * 60000).length;
+
+    const day = (await db.readDoc('live_day', {})) || {};
+    const today = new Date().toISOString().slice(0, 10);
+    const doDia = day.day === today;
+
+    // vendas por produto (hoje)
+    const prod = {};
+    for (const o of orders) {
+      for (const it of o.items) {
+        const k = it.title || '—';
+        if (!prod[k]) prod[k] = { title: k, qty: 0, value: 0 };
+        prod[k].qty += it.qty;
+        prod[k].value += it.qty * it.price;
+      }
+    }
+
+    // novos × recorrentes (orders_count do cliente na hora do pedido)
+    let novos = 0;
+    let recorrentes = 0;
+    for (const o of orders) {
+      if (o.customerOrders == null) continue;
+      if (o.customerOrders > 1) recorrentes++; else novos++;
+    }
+
+    const meiaHora = (d) => Math.floor((d.getTime() - from.getTime()) / 1800000);
+    const salesSeries = {};
+    const orderSeries = {};
+    for (const o of orders) {
+      const i = meiaHora(o.createdAt);
+      salesSeries[i] = (salesSeries[i] || 0) + o.total;
+      orderSeries[i] = (orderSeries[i] || 0) + 1;
+    }
+
+    res.json({
+      visitorsNow: ativas.length,
+      sessionsToday: doDia ? (day.count || 0) : 0,
+      sales: m.sales,
+      orders: m.orders,
+      behavior: { carts, checkout: inCheckout, purchased },
+      byLocation: Object.entries(doDia ? (day.locs || {}) : {})
+        .map(([k, n]) => { const [cc, reg, city] = k.split('|'); return { cc, reg, city, sessions: n }; })
+        .sort((a, b) => b.sessions - a.sessions).slice(0, 8),
+      sessionSeries: doDia ? (day.series || {}) : {},
+      salesSeries,
+      orderSeries,
+      newVsReturning: { novos, recorrentes },
+      byProduct: Object.values(prod).sort((a, b) => b.value - a.value).slice(0, 8),
+      orderPoints: orders.filter((o) => o.lat != null && o.lng != null).slice(0, 300)
+        .map((o) => ({ lat: o.lat, lng: o.lng, t: o.createdAt.toISOString(), total: o.total, city: o.city, country: o.country, number: o.number })),
+      visitorPoints: ativas.filter((s) => s.lat != null && s.lng != null)
+        .map((s) => ({ lat: s.lat, lng: s.lng, city: s.city || null })),
     });
   } catch (e) {
     res.status(500).json({ error: e.message });

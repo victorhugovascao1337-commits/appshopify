@@ -1333,3 +1333,109 @@ html[data-theme="dark"] .dr-root .text-red-400 { color: #f87171 !important; }
 @media (max-width: 980px) {
   .theme-toggle .tt-label { display: none; }
 }
+
+/* ============================================================
+   Live View (estilo Shopify) — globo 3D ⇄ mapa plano
+   Sempre claro, como o Live View original, nos dois temas.
+   ============================================================ */
+.lv-root {
+  position: relative;
+  height: min(880px, calc(100vh - 110px));
+  min-height: 560px;
+  border-radius: 18px;
+  overflow: hidden;
+  background: radial-gradient(120% 90% at 70% 30%, #eef4f9 0%, #e7eef6 55%, #dfe9f3 100%);
+  border: 1px solid rgba(20, 40, 70, 0.08);
+  box-shadow: 0 10px 30px rgba(15, 35, 70, 0.08);
+}
+.lv-root:fullscreen { height: 100vh; border-radius: 0; }
+.lv-root canvas#lvGlobe { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+.lv-root canvas#lvGlobe.dragging { cursor: grabbing; }
+#lvMap { position: absolute; inset: 0; z-index: 1; background: #eef1f4; }
+
+/* barra do topo */
+.lv-topbar {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 30;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; pointer-events: none;
+}
+.lv-topbar > * { pointer-events: auto; }
+.lv-title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; color: #202223; }
+.lv-title svg { width: 17px; height: 17px; color: #202223; }
+.lv-live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: #6d7175; margin-left: 6px; }
+.lv-live-dot { width: 8px; height: 8px; border-radius: 50%; background: #29845a; box-shadow: 0 0 0 3px rgba(41, 132, 90, 0.18); animation: lvPulse 2s infinite; }
+@keyframes lvPulse { 0%,100% { box-shadow: 0 0 0 3px rgba(41,132,90,.18); } 50% { box-shadow: 0 0 0 6px rgba(41,132,90,.08); } }
+.lv-tools { display: flex; align-items: center; gap: 8px; }
+.lv-tool {
+  width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center;
+  background: #fff; color: #202223; border: 1px solid rgba(20,40,70,.12); border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.06); cursor: pointer; font-size: 16px; line-height: 1; padding: 0;
+}
+.lv-tool:hover { background: #f6f6f7; }
+.lv-tool svg { width: 17px; height: 17px; }
+.lv-tool.active { background: #202223; color: #fff; border-color: #202223; }
+.lv-search { position: relative; display: flex; align-items: center; background: #fff; border: 1px solid rgba(20,40,70,.12); border-radius: 10px; box-shadow: 0 1px 2px rgba(0,0,0,.06); padding: 0 10px; height: 36px; width: 300px; max-width: 38vw; }
+.lv-search svg { width: 15px; height: 15px; color: #6d7175; flex: 0 0 auto; }
+.lv-search input { border: 0; outline: 0; background: transparent; padding: 0 8px; font-size: 13px; color: #202223; width: 100%; font-family: inherit; }
+.lv-search input::placeholder { color: #8c9196; }
+.lv-search-results {
+  position: absolute; top: 40px; left: 0; right: 0; background: #fff; border: 1px solid rgba(20,40,70,.12);
+  border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.12); overflow: hidden; z-index: 50;
+}
+.lv-search-results button { display: block; width: 100%; text-align: left; padding: 9px 12px; background: none; border: 0; font-size: 12.5px; color: #202223; cursor: pointer; font-family: inherit; }
+.lv-search-results button:hover { background: #f2f7fd; }
+
+/* coluna de métricas */
+.lv-cards {
+  position: absolute; z-index: 20; top: 58px; left: 14px; bottom: 14px; width: 452px; max-width: calc(100% - 28px);
+  overflow-y: auto; overscroll-behavior: contain; padding-right: 6px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start;
+}
+.lv-cards::-webkit-scrollbar { width: 8px; }
+.lv-cards::-webkit-scrollbar-thumb { background: rgba(70, 90, 120, 0.35); border-radius: 4px; }
+.lv-cards.hidden { display: none; }
+.lv-card { background: #fff; border: 1px solid rgba(20,40,70,.09); border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.05); padding: 12px 14px; color: #202223; min-width: 0; }
+.lv-card.wide { grid-column: 1 / -1; }
+.lv-card h4 { margin: 0 0 6px; font-size: 13px; font-weight: 550; color: #202223; border-bottom: 1px dotted transparent; }
+.lv-card h4.u { text-decoration: underline dotted #babfc3; text-underline-offset: 3px; }
+.lv-kpi { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
+.lv-kpi .lv-val { font-size: 19px; font-weight: 650; color: #202223; letter-spacing: -0.2px; white-space: nowrap; }
+.lv-kpi .lv-val small { font-size: 12px; color: #6d7175; font-weight: 450; margin-left: 4px; }
+.lv-spark { width: 88px; height: 30px; flex: 0 0 auto; }
+.lv-behavior { display: grid; grid-template-columns: 1fr 1fr 1fr; }
+.lv-behavior > div { padding: 2px 12px; border-left: 1px solid #e1e3e5; }
+.lv-behavior > div:first-child { border-left: 0; padding-left: 0; }
+.lv-behavior .b-label { font-size: 12px; color: #202223; margin-bottom: 8px; }
+.lv-behavior .b-val { font-size: 18px; font-weight: 650; }
+.lv-locrow { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; margin-top: 10px; }
+.lv-locrow .l-name { font-size: 11.5px; color: #6d7175; grid-column: 1 / -1; }
+.lv-locrow .l-bar { height: 26px; border-radius: 4px; background: #29b2e5; min-width: 8px; }
+.lv-locrow .l-val { font-size: 12px; color: #202223; }
+.lv-empty { padding: 26px 0 18px; text-align: center; color: #6d7175; font-size: 12.5px; }
+.lv-prodrow { display: flex; align-items: center; gap: 10px; margin-top: 9px; }
+.lv-prodrow .p-name { flex: 1; font-size: 12.5px; color: #202223; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-prodrow .p-bar-wrap { flex: 0 0 110px; height: 8px; border-radius: 4px; background: #eef1f3; overflow: hidden; }
+.lv-prodrow .p-bar { height: 100%; background: #29b2e5; border-radius: 4px; }
+.lv-prodrow .p-val { font-size: 12px; color: #202223; min-width: 70px; text-align: right; }
+.lv-donut { display: flex; align-items: center; gap: 16px; padding: 6px 0 2px; }
+.lv-donut-legend { font-size: 12px; color: #202223; display: grid; gap: 7px; }
+.lv-donut-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; }
+
+/* rodapé: legenda + zoom */
+.lv-bottom { position: absolute; z-index: 25; right: 14px; bottom: 14px; display: flex; align-items: flex-end; gap: 10px; }
+.lv-legend { display: flex; gap: 8px; }
+.lv-chip { display: inline-flex; align-items: center; gap: 7px; background: #fff; border: 1px solid rgba(20,40,70,.1); border-radius: 999px; box-shadow: 0 1px 2px rgba(0,0,0,.06); padding: 7px 12px; font-size: 12px; color: #202223; }
+.lv-ic { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.lv-ic-order { background: #8051ff; box-shadow: 0 0 0 3px rgba(128, 81, 255, .18); }
+.lv-ic-visitor { background: #3d8df5; box-shadow: 0 0 0 3px rgba(61, 141, 245, .18); }
+.lv-zoom { display: flex; flex-direction: column; gap: 6px; }
+.lv-zoom .lv-tool { font-size: 17px; font-weight: 600; }
+
+/* leaflet: tooltips clean */
+#lvMap .leaflet-tooltip { border-radius: 8px; border: 1px solid rgba(20,40,70,.12); box-shadow: 0 2px 8px rgba(0,0,0,.12); font-size: 12px; }
+#lvMap .leaflet-control-attribution { font-size: 9px; background: rgba(255,255,255,.7); }
+
+@media (max-width: 900px) {
+  .lv-cards { width: calc(100% - 28px); grid-template-columns: 1fr 1fr; top: 100px; bottom: auto; max-height: 55%; }
+  .lv-search { width: 170px; }
+}
