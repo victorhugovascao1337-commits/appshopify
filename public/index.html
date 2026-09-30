@@ -1010,7 +1010,17 @@
                 <code id="oauthScopesLine" style="white-space:normal;word-break:break-all">carregando…</code>
                 <button type="button" class="control sm" id="copyScopesLineBtn">Copiar</button>
               </div>
-              <p id="oauthCfgHint" class="wiz-hint" style="margin-top:10px">Salvou o app? Copie o <strong>Client ID</strong> e o <strong>Client Secret</strong> (App setup → Client credentials) e cole nos campos acima. ⚠️ Conecte a loja <strong>logado na conta do painel que vai ser dona dela</strong>.</p>
+              <p style="margin-top:8px"><strong>6 · Salvar</strong> — no dashboard novo da Shopify, clique também em <strong>"Release" / Liberar versão</strong>: a configuração só passa a valer depois disso.</p>
+              <p id="oauthCfgHint" class="wiz-hint" style="margin-top:10px">Salvou o app? Copie o <strong>Client ID</strong> e o <strong>Client Secret</strong> (Credenciais do app) e cole nos campos acima. ⚠️ Conecte a loja <strong>logado na conta do painel que vai ser dona dela</strong>.</p>
+            </div>
+
+            <!-- erro clássico: callback colado no campo errado -->
+            <div class="wiz-note note-warn">
+              <strong>⚠ Deu "The redirect_uri and application url must have matching hosts"?</strong>
+              <p>É <strong>campo trocado</strong>: a URL <code>…/api/oauth/callback</code> foi parar em <strong>"URL do app"</strong> — ou o campo de redirecionamento ficou vazio.</p>
+              <p>• <strong>URL do app</strong> = só o endereço do painel, <strong>sem</strong> <code>/api/…</code> (valor do passo 1)</p>
+              <p>• <strong>URL(s) de redirecionamento permitida(s)</strong> = a URL que termina em <code>/api/oauth/callback</code> (valor do passo 3)</p>
+              <p>• Confira também: app incorporado <strong>desmarcado ☐</strong> e fluxo legado <strong>marcado ✅</strong>. Salve, <strong>libere a versão</strong> e clique em Autorizar de novo.</p>
             </div>
 
             <div class="wiz-status" id="oauthStatus"></div>
