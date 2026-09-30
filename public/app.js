@@ -2560,6 +2560,25 @@ copiaCampo('copyAppUrlBtn', 'oauthAppUrl', '✓ URL do app copiada', 'Cole no ca
 copiaCampo('copyRedirectBtn', 'oauthRedirectUri', '✓ URL de redirecionamento copiada', 'Cole em "URL(s) de redirecionamento permitida(s)".');
 copiaCampo('copyScopesLineBtn', 'oauthScopesLine', '✓ Escopos copiados', 'Cole no campo "Escopos" (Acesso à API), separado por vírgulas.');
 
+/* instalação iniciada pela Shopify ("Install app" no dashboard): a Shopify manda o
+   lojista pra URL do app com ?shop=&hmac= — e quem termina a instalação é o OAuth.
+   Então detectamos a chegada e já abrimos o assistente com o domínio preenchido. */
+(function shopifyInstallHandoff() {
+  const q = new URLSearchParams(location.search);
+  const shop = q.get('shop');
+  if (!shop || !q.get('hmac') || !/\.myshopify\.com$/i.test(shop)) return;
+  history.replaceState(null, '', location.pathname); // limpa a URL (não repete no F5)
+  setTimeout(() => {
+    try {
+      document.querySelector('.tab-btn[data-tab="lojas"]').click();
+      openWizard();
+      setWizardMode('oauth');
+      $('oauthDomain').value = shop;
+      showLojaToast('🛍 Instalação vinda da Shopify', `A loja ${shop} chegou pra conectar. Confira o papel (vitrine/checkout), o Client ID/Secret do app, e clique em Autorizar — é isso que conclui a instalação.`);
+    } catch { /* estrutura mudou? o usuário segue pelo assistente manualmente */ }
+  }, 700);
+})();
+
 async function oauthStart() {
   const domain = $('oauthDomain').value.trim();
   if (!domain) { setWizStatus('oauthStatus', '✗ Informe o domínio .myshopify.com da loja.', 'err'); return; }
