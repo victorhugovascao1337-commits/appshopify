@@ -10,6 +10,30 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { AsyncLocalStorage } = require('async_hooks');
+
+/* ---------- multi-contas (tenancy) ----------
+ * Cada conta do painel tem seu próprio namespace de documentos.
+ * O namespace corre implícito na requisição via AsyncLocalStorage:
+ *  - runAsAccount(ns, fn): executa fn com o namespace ativo;
+ *  - ns '' (vazio) = conta admin/legada → chaves SEM prefixo (dados antigos intactos);
+ *  - ns 'abc'      → chaves viram 'acc:abc:<key>'.
+ * readDocGlobal/writeDocGlobal ignoram o namespace (contas, índice de lojas etc.).
+ */
+const tenancy = new AsyncLocalStorage();
+
+function runAsAccount(ns, fn) {
+  return tenancy.run(String(ns || ''), fn);
+}
+
+function currentNs() {
+  return tenancy.getStore() || '';
+}
+
+function scopedKey(key) {
+  const ns = currentNs();
+  return ns ? `acc:${ns}:${key}` : key;
+}
 
 const DATA_DIR = path.join(__dirname, 'data');
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
@@ -55,9 +79,13 @@ const FILES = {
   postpurchase: 'postpurchase.json',
 };
 
+function fileName(key) {
+  return FILES[key] || `${String(key).replace(/[^\w.-]/g, '_')}.json`;
+}
+
 function fileRead(key, fallback) {
   try {
-    return JSON.parse(fs.readFileSync(path.join(DATA_DIR, FILES[key]), 'utf8'));
+    return JSON.parse(fs.readFileSync(path.join(DATA_DIR, fileName(key)), 'utf8'));
   } catch {
     return fallback;
   }
@@ -65,7 +93,7 @@ function fileRead(key, fallback) {
 
 function fileWrite(key, value) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(path.join(DATA_DIR, FILES[key]), JSON.stringify(value, null, 2));
+  fs.writeFileSync(path.join(DATA_DIR, fileName(key)), JSON.stringify(value, null, 2));
 }
 
 /* ---------- driver: Supabase (PostgREST, sem dependência extra) ---------- */
@@ -107,11 +135,36 @@ async function sbWrite(key, value) {
 /* ---------- API pública ---------- */
 
 async function readDoc(key, fallback) {
-  return USE_SUPABASE ? sbRead(key, fallback) : fileRead(key, fallback);
+  const k = scopedKey(key);
+  return USE_SUPABASE ? sbRead(k, fallback) : fileRead(k, fallback);
 }
 
 async function writeDoc(key, value) {
+  const k = scopedKey(key);
+  return USE_SUPABASE ? sbWrite(k, value) : fileWrite(k, value);
+}
+
+// versões SEM namespace — só para documentos realmente globais (contas, índice shop→conta)
+async function readDocGlobal(key, fallback) {
+  return USE_SUPABASE ? sbRead(key, fallback) : fileRead(key, fallback);
+}
+
+async function writeDocGlobal(key, value) {
   return USE_SUPABASE ? sbWrite(key, value) : fileWrite(key, value);
+}
+
+// apaga todos os documentos de uma conta (ao excluir a conta no painel)
+async function purgeAccountDocs(ns) {
+  if (!ns) return; // nunca apaga o namespace legado/admin
+  if (USE_SUPABASE) {
+    await sbRequest(`${TABLE}?key=like.${encodeURIComponent(`acc:${ns}:*`)}`, { method: 'DELETE' });
+  } else {
+    try {
+      for (const f of fs.readdirSync(DATA_DIR)) {
+        if (f.startsWith(`acc_${ns}_`) || f.startsWith(`acc:${ns}:`)) fs.unlinkSync(path.join(DATA_DIR, f));
+      }
+    } catch { /* diretório pode não existir */ }
+  }
 }
 
 // tokens ficam criptografados no banco; o resto do app segue vendo texto puro
@@ -122,6 +175,14 @@ async function readStores() {
 
 async function writeStores(stores) {
   await writeDoc('stores', stores.map((s) => ({ ...s, token: encrypt(s.token) })));
+  // mantém o índice global domínio→conta usado pelas rotas públicas (/redirect.js, /api/resolve, /api/beacon)
+  try {
+    const ns = currentNs();
+    const idx = (await readDocGlobal('shop_ns', {})) || {};
+    for (const d of Object.keys(idx)) if (idx[d] === ns) delete idx[d];
+    for (const s of stores) if (s && s.domain) idx[String(s.domain).toLowerCase()] = ns;
+    await writeDocGlobal('shop_ns', idx);
+  } catch { /* índice é reconstruível; não bloqueia o save */ }
 }
 
 async function ping() {
@@ -133,6 +194,11 @@ async function ping() {
 module.exports = {
   USE_SUPABASE,
   hasEncryptionKey: () => !!encKey(),
+  runAsAccount,
+  currentNs,
+  readDocGlobal,
+  writeDocGlobal,
+  purgeAccountDocs,
   readDoc,
   writeDoc,
   readStores,

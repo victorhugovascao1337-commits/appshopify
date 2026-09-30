@@ -585,7 +585,85 @@ const overlay = $('modalOverlay');
 $('manageBtn').addEventListener('click', () => {
   overlay.hidden = false;
   renderStoreList();
+  loadAccountsUI();
 });
+
+/* ---------- contas de acesso (multi-login) ---------- */
+
+async function loadAccountsUI() {
+  try {
+    const d = await api('/api/accounts');
+    $('sessionUser').textContent = d.me ? `${d.me.user}${d.me.role === 'admin' ? ' (admin)' : ''}` : '—';
+    const sec = $('accountsSection');
+    if (!d.accounts) { sec.hidden = true; return; } // não-admin não vê gerenciamento
+    sec.hidden = false;
+    // código de convite (criar conta pela tela de login)
+    try {
+      const inv = await api('/api/accounts/invite');
+      $('inviteCode').textContent = inv.code;
+      $('inviteCopy').onclick = async () => {
+        try { await navigator.clipboard.writeText(inv.code); $('inviteCopy').textContent = '✓ Copiado'; setTimeout(() => { $('inviteCopy').textContent = '📋 Copiar'; }, 1800); } catch {}
+      };
+      $('inviteRegen').onclick = async () => {
+        if (!confirm('Gerar um código novo? O código antigo para de funcionar na hora.')) return;
+        const r = await fetch('/api/accounts/invite', { method: 'POST' });
+        const j = await r.json();
+        if (r.ok) { $('inviteCode').textContent = j.code; }
+      };
+    } catch { $('inviteCode').textContent = '—'; }
+    const list = $('accountsList');
+    list.innerHTML = d.accounts.map((a) => `
+      <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px 12px">
+        <span><strong>${esc(a.user)}</strong> <span class="hint" style="margin:0">· ${a.role === 'admin' ? 'admin' : 'conta separada'}${a.createdAt ? ' · desde ' + new Date(a.createdAt).toLocaleDateString('pt-BR') : ''}</span></span>
+        ${a.id === 'admin' ? '' : `<button type="button" class="control btn-ghost sm" data-acc-del="${esc(a.id)}" data-acc-user="${esc(a.user)}">Excluir</button>`}
+      </div>`).join('') || '<span class="hint">Nenhuma conta ainda.</span>';
+    list.querySelectorAll('[data-acc-del]').forEach((b) => b.addEventListener('click', async () => {
+      if (!confirm(`Excluir a conta "${b.dataset.accUser}"?\n\nTODAS as lojas, flow e configurações DELA serão apagados. Isso não tem volta.`)) return;
+      b.disabled = true;
+      try {
+        const res = await fetch(`/api/accounts/${encodeURIComponent(b.dataset.accDel)}`, { method: 'DELETE' });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+        loadAccountsUI();
+      } catch (e) { $('accStatus').textContent = e.message; b.disabled = false; }
+    }));
+  } catch { /* sem sessão de contas (local sem senha) */ }
+}
+
+$('accCreateBtn').addEventListener('click', async () => {
+  const st = $('accStatus');
+  st.textContent = 'Criando…';
+  try {
+    const res = await fetch('/api/accounts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: $('accUser').value.trim(), password: $('accPass').value }),
+    });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+    st.textContent = `Conta "${j.account.user}" criada — já dá pra logar com ela.`;
+    $('accUser').value = '';
+    $('accPass').value = '';
+    loadAccountsUI();
+  } catch (e) { st.textContent = e.message; }
+});
+
+async function sair() {
+  await fetch('/api/logout', { method: 'POST' }).catch(() => {});
+  window.location.href = '/login';
+}
+$('logoutBtn').addEventListener('click', sair);
+$('sideLogoutBtn').addEventListener('click', sair);
+
+// mostra a conta logada na sidebar (some no painel local sem senha)
+(async function initSidebarSession() {
+  try {
+    const res = await fetch('/api/session');
+    if (!res.ok) return;
+    const s = await res.json();
+    $('sideSessionName').textContent = s.user + (s.role === 'admin' ? ' · admin' : '');
+    $('sideSession').hidden = false;
+  } catch { /* segue sem o badge */ }
+})();
 $('modalClose').addEventListener('click', () => (overlay.hidden = true));
 overlay.addEventListener('click', (e) => {
   if (e.target === overlay) overlay.hidden = true;

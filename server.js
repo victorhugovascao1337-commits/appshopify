@@ -43,25 +43,67 @@ function sign(value) {
   return crypto.createHmac('sha256', SESSION_SECRET || 'dev').update(value).digest('base64url');
 }
 
-function makeToken() {
-  const exp = String(Date.now() + SESSION_HOURS * 3600 * 1000);
-  return `${Buffer.from(exp).toString('base64url')}.${sign(exp)}`;
+/* ---------- contas (multi-login, cada uma com seu ambiente isolado) ----------
+ * Doc global 'accounts': [{ id, user, salt, hash, role: 'admin'|'user', ns, createdAt }]
+ *  - admin: criado no primeiro login com PANEL_PASSWORD; ns '' = dados legados (nada migra).
+ *  - contas novas: ns = id → todos os documentos ganham prefixo acc:<id>: no banco.
+ * A sessão (cookie) carrega { u, ns, r, exp } assinados por HMAC.
+ */
+
+function hashPassword(password, salt) {
+  return crypto.scryptSync(String(password), salt, 64).toString('base64');
 }
 
-function validToken(token) {
-  if (!token || !token.includes('.')) return false;
-  const [encExp, sig] = token.split('.');
-  let exp;
-  try {
-    exp = Buffer.from(encExp, 'base64url').toString();
-  } catch {
-    return false;
-  }
-  if (!/^\d+$/.test(exp)) return false;
-  const expected = Buffer.from(sign(exp));
+function checkPassword(account, password) {
+  const expected = Buffer.from(account.hash, 'base64');
+  const got = crypto.scryptSync(String(password), account.salt, 64);
+  return expected.length === got.length && crypto.timingSafeEqual(expected, got);
+}
+
+async function loadAccounts() {
+  const raw = (await db.readDocGlobal('accounts', [])) || [];
+  return Array.isArray(raw) ? raw : [];
+}
+
+async function saveAccounts(list) {
+  return db.writeDocGlobal('accounts', list);
+}
+
+function makeToken(account) {
+  const payload = Buffer.from(JSON.stringify({
+    u: account.user,
+    ns: account.ns || '',
+    r: account.role || 'user',
+    exp: Date.now() + SESSION_HOURS * 3600 * 1000,
+  })).toString('base64url');
+  return `${payload}.${sign(payload)}`;
+}
+
+// devolve { u, ns, r } ou null
+function parseToken(token) {
+  if (!token || !token.includes('.')) return null;
+  const [payload, sig] = token.split('.');
+  const expected = Buffer.from(sign(payload));
   const got = Buffer.from(sig);
-  if (expected.length !== got.length || !crypto.timingSafeEqual(expected, got)) return false;
-  return Number(exp) > Date.now();
+  if (expected.length !== got.length || !crypto.timingSafeEqual(expected, got)) return null;
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
+    return data.exp > Date.now() ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+// índice global domínio da loja → namespace da conta (para as rotas públicas)
+let shopNsCache = { at: 0, map: {} };
+async function shopNsLookup(shop) {
+  const domain = String(shop || '').trim().toLowerCase();
+  if (!domain) return '';
+  if (Date.now() - shopNsCache.at > 60000) {
+    try { shopNsCache = { at: Date.now(), map: (await db.readDocGlobal('shop_ns', {})) || {} }; }
+    catch { shopNsCache.at = Date.now(); }
+  }
+  return shopNsCache.map[domain] || ''; // sem registro → namespace legado (admin)
 }
 
 function readCookie(req, name) {
@@ -70,51 +112,232 @@ function readCookie(req, name) {
   return hit ? decodeURIComponent(hit.slice(name.length + 1)) : null;
 }
 
-const LOGIN_PATHS = new Set(['/login', '/api/login', '/utm/redirect']);
+const LOGIN_PATHS = new Set(['/login', '/api/login', '/api/register', '/utm/redirect']);
 
-app.use((req, res, next) => {
+app.use(async (req, res, next) => {
   if (IS_HOSTED && !PANEL_PASSWORD) {
     return res.status(503).json({
       error: 'PANEL_PASSWORD não configurada. O painel está bloqueado para não expor suas lojas e tokens — defina essa variável de ambiente e faça o redeploy.',
     });
   }
-  if (!PANEL_PASSWORD) return next(); // local sem senha
+  if (!PANEL_PASSWORD) return db.runAsAccount('', next); // local sem senha → ambiente legado/admin
   /*
    * Rotas públicas (não passam pelo login) e por quê:
-   * - /api/oauth/callback: vem da Shopify; provado por state assinado + HMAC.
-   * - /api/cron/*: protegido por CRON_SECRET.
-   * - /redirect.js e /api/resolve: rodam no NAVEGADOR DO CLIENTE da loja, que
-   *   obviamente não tem login. Só expõem o mapa de produtos (dado público:
-   *   quem vê a vitrine já vê os produtos), nunca token, pedido ou faturamento.
+   * - /api/oauth/callback: vem da Shopify; provado por state assinado + HMAC (o state carrega a conta).
+   * - /api/cron/*: protegido por CRON_SECRET; o handler roda o ciclo de CADA conta.
+   * - /redirect.js, /api/resolve e /api/beacon: rodam no NAVEGADOR DO CLIENTE da loja —
+   *   a conta dona é resolvida pelo ?shop= via índice global (sem expor nada sensível).
    */
-  if (LOGIN_PATHS.has(req.path) || req.path.startsWith('/api/cron/') ||
-      req.path === '/api/oauth/callback' || req.path === '/redirect.js' || req.path === '/api/resolve' ||
-      req.path === '/api/beacon') return next(); // beacon: ping anônimo de presença vindo da vitrine (sem dado sensível)
+  if (LOGIN_PATHS.has(req.path) || req.path.startsWith('/api/cron/')) return next();
+  if (req.path === '/api/oauth/callback') {
+    const st = readState(req.query.state); // hoisted — definida mais abaixo
+    return db.runAsAccount((st && st.ns) || '', next);
+  }
+  if (req.path === '/redirect.js' || req.path === '/api/resolve' || req.path === '/api/beacon') {
+    const ns = await shopNsLookup(req.query.shop).catch(() => '');
+    return db.runAsAccount(ns, next);
+  }
   // arquivos estáticos (css/js/fontes/imagens) são públicos: a própria tela de login
   // precisa deles e não contêm segredo — as APIs continuam exigindo o cookie.
   if (/\.(css|js|mjs|woff2?|ttf|otf|png|jpe?g|svg|gif|ico|webp|map)$/i.test(req.path)) return next();
-  if (validToken(readCookie(req, COOKIE))) return next();
+  const sess = parseToken(readCookie(req, COOKIE));
+  if (sess) {
+    req.account = sess; // { u, ns, r }
+    return db.runAsAccount(sess.ns, next);
+  }
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Não autenticado.' });
   return res.redirect('/login');
 });
 
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
 
-app.post('/api/login', (req, res) => {
-  const pass = String((req.body || {}).password || '');
-  // compara em tempo constante (hash dos dois lados p/ ter tamanho fixo)
-  const a = crypto.createHash('sha256').update(pass).digest();
+function isMasterPassword(pass) {
+  if (!PANEL_PASSWORD) return false;
+  const a = crypto.createHash('sha256').update(String(pass)).digest();
   const b = crypto.createHash('sha256').update(PANEL_PASSWORD).digest();
-  if (!PANEL_PASSWORD || !crypto.timingSafeEqual(a, b)) {
-    return res.status(401).json({ error: 'Senha incorreta.' });
+  return crypto.timingSafeEqual(a, b);
+}
+
+app.post('/api/login', async (req, res) => {
+  try {
+    const user = String((req.body || {}).user || 'admin').trim().toLowerCase();
+    const pass = String((req.body || {}).password || '');
+    if (!PANEL_PASSWORD) return res.status(400).json({ error: 'Painel local sem senha — login não é necessário.' });
+
+    const accounts = await loadAccounts();
+    let account = accounts.find((a) => a.user === user) || null;
+
+    let ok = false;
+    if (account && account.hash && checkPassword(account, pass)) ok = true;
+    // 'admin' sempre entra com a PANEL_PASSWORD (bootstrap + recuperação)
+    if (!ok && user === 'admin' && isMasterPassword(pass)) {
+      ok = true;
+      if (!account) {
+        const salt = crypto.randomBytes(16).toString('base64');
+        account = { id: 'admin', user: 'admin', role: 'admin', ns: '', salt, hash: hashPassword(pass, salt), createdAt: new Date().toISOString() };
+        accounts.push(account);
+        await saveAccounts(accounts);
+      }
+    }
+    if (!ok || !account) return res.status(401).json({ error: 'Usuário ou senha incorretos.' });
+
+    res.setHeader('Set-Cookie', `${COOKIE}=${makeToken(account)}; HttpOnly; Path=/; Max-Age=${SESSION_HOURS * 3600}; SameSite=Lax${IS_HOSTED ? '; Secure' : ''}`);
+    res.json({ ok: true, user: account.user, role: account.role });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
-  res.setHeader('Set-Cookie', `${COOKIE}=${makeToken()}; HttpOnly; Path=/; Max-Age=${SESSION_HOURS * 3600}; SameSite=Lax${IS_HOSTED ? '; Secure' : ''}`);
-  res.json({ ok: true });
 });
 
 app.post('/api/logout', (req, res) => {
   res.setHeader('Set-Cookie', `${COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax${IS_HOSTED ? '; Secure' : ''}`);
   res.json({ ok: true });
+});
+
+/* ---------- gerenciamento de contas (multi-login) ---------- */
+
+function sessionInfo(req) {
+  if (!PANEL_PASSWORD) return { user: 'admin', role: 'admin', ns: '' }; // local sem senha
+  return req.account ? { user: req.account.u, role: req.account.r, ns: req.account.ns } : null;
+}
+
+function requireAdmin(req, res) {
+  const s = sessionInfo(req);
+  if (!s || s.role !== 'admin') {
+    res.status(403).json({ error: 'Só a conta admin gerencia contas.' });
+    return false;
+  }
+  return true;
+}
+
+app.get('/api/session', (req, res) => {
+  const s = sessionInfo(req);
+  if (!s) return res.status(401).json({ error: 'Não autenticado.' });
+  res.json({ user: s.user, role: s.role });
+});
+
+app.get('/api/accounts', async (req, res) => {
+  try {
+    const s = sessionInfo(req);
+    if (!s) return res.status(401).json({ error: 'Não autenticado.' });
+    const out = { me: { user: s.user, role: s.role } };
+    if (s.role === 'admin') {
+      out.accounts = (await loadAccounts()).map((a) => ({ id: a.id, user: a.user, role: a.role, createdAt: a.createdAt }));
+    }
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/accounts', async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const user = String((req.body || {}).user || '').trim().toLowerCase();
+    const pass = String((req.body || {}).password || '');
+    if (!/^[a-z0-9._-]{3,30}$/.test(user)) return res.status(400).json({ error: 'Usuário inválido — use 3 a 30 letras minúsculas, números, ponto, hífen ou _.' });
+    if (pass.length < 6) return res.status(400).json({ error: 'Senha muito curta (mínimo 6 caracteres).' });
+    const accounts = await loadAccounts();
+    if (accounts.some((a) => a.user === user)) return res.status(409).json({ error: 'Já existe uma conta com esse usuário.' });
+    const id = crypto.randomUUID();
+    const salt = crypto.randomBytes(16).toString('base64');
+    const conta = { id, user, role: 'user', ns: id, salt, hash: hashPassword(pass, salt), createdAt: new Date().toISOString() };
+    accounts.push(conta);
+    await saveAccounts(accounts);
+    res.json({ ok: true, account: { id, user, role: 'user', createdAt: conta.createdAt } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/accounts/:id', async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const id = String(req.params.id);
+    if (id === 'admin') return res.status(400).json({ error: 'A conta admin não pode ser excluída.' });
+    const accounts = await loadAccounts();
+    const alvo = accounts.find((a) => a.id === id);
+    if (!alvo) return res.status(404).json({ error: 'Conta não encontrada.' });
+    await saveAccounts(accounts.filter((a) => a.id !== id));
+    // apaga o ambiente da conta (lojas, flow, tracking, tudo) e limpa o índice de domínios
+    try { await db.purgeAccountDocs(alvo.ns); } catch { /* melhor esforço */ }
+    try {
+      const idx = (await db.readDocGlobal('shop_ns', {})) || {};
+      for (const d of Object.keys(idx)) if (idx[d] === alvo.ns) delete idx[d];
+      await db.writeDocGlobal('shop_ns', idx);
+      shopNsCache = { at: 0, map: {} };
+    } catch { /* idem */ }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* ---------- auto-cadastro com código de convite ----------
+ * O admin vê/gera o código na seção "Contas de acesso" e passa pra pessoa.
+ * Na tela de login, "Criar nova conta" pede usuário + senha + código.
+ * Sem o código, ninguém cria conta — o painel não fica aberto pra estranhos.
+ */
+
+async function ensureInviteCode() {
+  let inv = (await db.readDocGlobal('invite', null)) || null;
+  if (!inv || !inv.code) {
+    inv = { code: crypto.randomBytes(4).toString('hex').toUpperCase(), at: new Date().toISOString() };
+    await db.writeDocGlobal('invite', inv);
+  }
+  return inv;
+}
+
+app.get('/api/accounts/invite', async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    res.json({ code: (await ensureInviteCode()).code });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/accounts/invite', async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const inv = { code: crypto.randomBytes(4).toString('hex').toUpperCase(), at: new Date().toISOString() };
+    await db.writeDocGlobal('invite', inv); // invalida o código antigo na hora
+    res.json({ code: inv.code });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// público (tela de login): cria a conta se o código de convite bater, e já entra
+app.post('/api/register', async (req, res) => {
+  try {
+    if (!PANEL_PASSWORD) return res.status(400).json({ error: 'Painel local sem senha — não precisa de conta.' });
+    const user = String((req.body || {}).user || '').trim().toLowerCase();
+    const pass = String((req.body || {}).password || '');
+    const invite = String((req.body || {}).invite || '').trim().toUpperCase();
+    const inv = (await db.readDocGlobal('invite', null)) || null;
+    if (!inv || !inv.code || invite !== inv.code) return res.status(401).json({ error: 'Código de convite inválido — peça o código pro admin.' });
+    if (!/^[a-z0-9._-]{3,30}$/.test(user)) return res.status(400).json({ error: 'Usuário inválido — use 3 a 30 letras minúsculas, números, ponto, hífen ou _.' });
+    if (pass.length < 6) return res.status(400).json({ error: 'Senha muito curta (mínimo 6 caracteres).' });
+    const accounts = await loadAccounts();
+    if (accounts.some((a) => a.user === user)) return res.status(409).json({ error: 'Já existe uma conta com esse usuário.' });
+    const id = crypto.randomUUID();
+    const salt = crypto.randomBytes(16).toString('base64');
+    const conta = { id, user, role: 'user', ns: id, salt, hash: hashPassword(pass, salt), createdAt: new Date().toISOString() };
+    accounts.push(conta);
+    await saveAccounts(accounts);
+    res.setHeader('Set-Cookie', `${COOKIE}=${makeToken(conta)}; HttpOnly; Path=/; Max-Age=${SESSION_HOURS * 3600}; SameSite=Lax${IS_HOSTED ? '; Secure' : ''}`);
+    res.json({ ok: true, user: conta.user });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// troca a própria senha (qualquer conta logada)
+app.post('/api/accounts/password', async (req, res) => {
+  try {
+    const s = sessionInfo(req);
+    if (!s) return res.status(401).json({ error: 'Não autenticado.' });
+    const atual = String((req.body || {}).current || '');
+    const nova = String((req.body || {}).password || '');
+    if (nova.length < 6) return res.status(400).json({ error: 'Senha muito curta (mínimo 6 caracteres).' });
+    const accounts = await loadAccounts();
+    const account = accounts.find((a) => a.user === s.user);
+    if (!account) return res.status(404).json({ error: 'Conta não encontrada.' });
+    const confere = (account.hash && checkPassword(account, atual)) || (s.user === 'admin' && isMasterPassword(atual));
+    if (!confere) return res.status(401).json({ error: 'Senha atual incorreta.' });
+    account.salt = crypto.randomBytes(16).toString('base64');
+    account.hash = hashPassword(nova, account.salt);
+    await saveAccounts(accounts);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -1575,9 +1798,17 @@ app.post('/api/post-purchase/run', async (req, res) => {
 // Local: processo vivo, então dá para varrer sozinho a cada 60s.
 // Vercel: serverless não mantém processo — quem chama é o cron (/api/cron/post-purchase).
 if (require.main === module) {
-  setInterval(() => {
-    runPostPurchaseCycle().catch(() => {});
-    runCapiCycle().catch(() => {});
+  setInterval(async () => {
+    try {
+      const accounts = await loadAccounts();
+      const namespaces = [...new Set(['', ...accounts.map((a) => a.ns || '')])];
+      for (const ns of namespaces) {
+        await db.runAsAccount(ns, async () => {
+          await runPostPurchaseCycle().catch(() => {});
+          await runCapiCycle().catch(() => {});
+        });
+      }
+    } catch { /* próximo tick tenta de novo */ }
   }, 60000);
 }
 
@@ -1595,11 +1826,19 @@ app.all('/api/cron/post-purchase', async (req, res) => {
     if (!crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: 'Cron não autorizado.' });
   }
   try {
-    const r = await runPostPurchaseCycle();
-    // aproveita o mesmo cron (GitHub Actions a cada 5 min) pra despachar o CAPI
-    let tracking = null;
-    try { tracking = await runCapiCycle(); } catch (e2) { tracking = { error: e2.message }; }
-    res.json({ ok: true, at: new Date().toISOString(), ...r, tracking });
+    // multi-contas: roda o ciclo de CADA ambiente (admin/legado + contas criadas)
+    const accounts = await loadAccounts();
+    const namespaces = [...new Set(['', ...accounts.map((a) => a.ns || '')])];
+    const porConta = {};
+    for (const ns of namespaces) {
+      porConta[ns || 'admin'] = await db.runAsAccount(ns, async () => {
+        const r = await runPostPurchaseCycle().catch((e2) => ({ error: e2.message }));
+        let tracking = null;
+        try { tracking = await runCapiCycle(); } catch (e3) { tracking = { error: e3.message }; }
+        return { ...r, tracking };
+      });
+    }
+    res.json({ ok: true, at: new Date().toISOString(), ...porConta });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1945,7 +2184,8 @@ function oauthRedirectUri(req) {
 
 // state assinado: carrega a loja e um nonce, com validade curta
 function makeState(shop, role) {
-  const payload = Buffer.from(JSON.stringify({ shop, role: role || null, exp: Date.now() + OAUTH_STATE_MINUTES * 60000, n: crypto.randomBytes(8).toString('hex') })).toString('base64url');
+  // ns: conta dona do fluxo — o callback (sem cookie) usa isso pra salvar a loja no ambiente certo
+  const payload = Buffer.from(JSON.stringify({ shop, role: role || null, ns: db.currentNs(), exp: Date.now() + OAUTH_STATE_MINUTES * 60000, n: crypto.randomBytes(8).toString('hex') })).toString('base64url');
   return `${payload}.${sign(payload)}`;
 }
 
@@ -2374,7 +2614,7 @@ function buildStorefrontScript(panelUrl, cfg, tracking) {
       if (!SID) { SID = Math.random().toString(36).slice(2) + Date.now().toString(36); sessionStorage.setItem('__pc_sid', SID); }
     } catch (e0) { SID = Math.random().toString(36).slice(2); }
     function beacon(ev) {
-      try { fetch(PANEL + '/api/beacon?sid=' + SID + '&ev=' + ev, { credentials: 'omit', keepalive: true }); } catch (e1) {}
+      try { fetch(PANEL + '/api/beacon?sid=' + SID + '&ev=' + ev + '&shop=' + encodeURIComponent(Shopify.shop), { credentials: 'omit', keepalive: true }); } catch (e1) {}
     }
     try {
       if (!sessionStorage.getItem('__pc_sv')) { sessionStorage.setItem('__pc_sv', '1'); beacon('view'); }

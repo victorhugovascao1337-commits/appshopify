@@ -22,6 +22,8 @@
     border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px;
   }
   .login-card input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(42,120,214,0.14); background: #fff; }
+  .login-alt { display: block; width: 100%; margin-top: 10px; background: none; border: 0; color: var(--accent); font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; padding: 6px; border-radius: 8px; }
+  .login-alt:hover { text-decoration: underline; }
   html[data-theme="dark"] .login-card input { background: #0e1728; }
   html[data-theme="dark"] .login-card input:focus { background: #0e1728; }
   .login-btn { width: 100%; margin-top: 16px; padding: 11px; font-size: 14px; }
@@ -40,27 +42,54 @@
         <div class="login-sub">Acesso restrito</div>
       </div>
     </div>
-    <label for="password">Senha do painel</label>
-    <input type="password" id="password" autocomplete="current-password" autofocus required>
+    <label for="user">Usuário</label>
+    <input type="text" id="user" autocomplete="username" placeholder="admin" autofocus required>
+    <label for="password">Senha</label>
+    <input type="password" id="password" autocomplete="current-password" required>
+    <div id="inviteWrap" hidden>
+      <label for="invite">Código de convite</label>
+      <input type="text" id="invite" autocomplete="off" placeholder="peça pro admin" style="text-transform:uppercase">
+    </div>
     <button type="submit" class="control btn-primary login-btn" id="loginBtn">Entrar</button>
+    <button type="button" class="login-alt" id="modeToggle">Criar nova conta →</button>
     <div class="login-err" id="loginErr"></div>
-    <p class="login-foot">A senha é a variável <code>PANEL_PASSWORD</code> definida no servidor.</p>
+    <p class="login-foot" id="loginFoot">Cada conta enxerga só as próprias lojas. A conta <code>admin</code> entra com a <code>PANEL_PASSWORD</code> do servidor.</p>
   </form>
 </div>
 <script>
   const form = document.getElementById('loginForm');
   const err = document.getElementById('loginErr');
   const btn = document.getElementById('loginBtn');
+  const toggle = document.getElementById('modeToggle');
+  let modo = 'login'; // 'login' | 'registro'
+
+  toggle.addEventListener('click', () => {
+    modo = modo === 'login' ? 'registro' : 'login';
+    const registro = modo === 'registro';
+    document.getElementById('inviteWrap').hidden = !registro;
+    document.getElementById('invite').required = registro;
+    btn.textContent = registro ? 'Criar conta e entrar' : 'Entrar';
+    toggle.textContent = registro ? '← Já tenho conta, entrar' : 'Criar nova conta →';
+    document.getElementById('loginFoot').innerHTML = registro
+      ? 'Pra criar conta você precisa do <strong>código de convite</strong> — peça pro admin do painel. Sua conta nasce com um ambiente próprio, separado das outras.'
+      : 'Cada conta enxerga só as próprias lojas. A conta <code>admin</code> entra com a <code>PANEL_PASSWORD</code> do servidor.';
+    err.textContent = '';
+    document.getElementById('user').focus();
+  });
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     err.textContent = '';
     btn.disabled = true;
-    btn.textContent = 'Entrando…';
+    const registro = modo === 'registro';
+    btn.textContent = registro ? 'Criando…' : 'Entrando…';
     try {
-      const res = await fetch('/api/login', {
+      const body = { user: document.getElementById('user').value.trim() || 'admin', password: document.getElementById('password').value };
+      if (registro) body.invite = document.getElementById('invite').value.trim();
+      const res = await fetch(registro ? '/api/register' : '/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: document.getElementById('password').value }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Falha ao entrar.');
@@ -68,7 +97,7 @@
     } catch (e) {
       err.textContent = e.message;
       btn.disabled = false;
-      btn.textContent = 'Entrar';
+      btn.textContent = registro ? 'Criar conta e entrar' : 'Entrar';
       document.getElementById('password').select();
     }
   });

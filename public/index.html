@@ -34,6 +34,10 @@
   <div class="side-bottom">
     <button class="theme-toggle" id="themeToggle" aria-label="Alternar tema claro/escuro"><span class="tt-ico"></span><span class="tt-label">Modo escuro</span></button>
     <button class="control btn-primary" id="manageBtn"><span class="mb-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg></span><span>Gerenciar lojas</span></button>
+    <div class="side-session" id="sideSession" hidden>
+      <span class="ss-user" id="sideSessionUser" title="Conta logada"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></svg><span id="sideSessionName">—</span></span>
+      <button class="ss-logout" id="sideLogoutBtn" title="Sair da conta"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg><span>Sair</span></button>
+    </div>
   </div>
 </aside>
 
@@ -1157,6 +1161,34 @@
       </div>
       <div class="form-status" id="formStatus"></div>
     </form>
+
+    <!-- Contas de acesso (multi-login) — visível só pra conta admin -->
+    <div id="accountsSection" class="add-form" style="margin-top:18px" hidden>
+      <h3>Contas de acesso</h3>
+      <p class="hint">Cada conta tem um ambiente <strong>totalmente separado</strong>: lojas, flow, mapeamentos e tracking próprios. Só o admin vê e gerencia as contas.</p>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--surface);border:1px dashed var(--border);border-radius:10px;padding:8px 12px;margin-bottom:12px">
+        <span class="hint" style="margin:0">Código de convite (pra criar conta na tela de login):</span>
+        <code id="inviteCode" style="font-weight:700;letter-spacing:1px">—</code>
+        <button type="button" class="control sm" id="inviteCopy">📋 Copiar</button>
+        <button type="button" class="control sm" id="inviteRegen" title="Gera um código novo e invalida o antigo">↻ Gerar novo</button>
+      </div>
+      <div id="accountsList" style="display:grid;gap:8px;margin-bottom:12px"></div>
+      <label>Novo usuário
+        <input type="text" id="accUser" placeholder="ex.: operacao2" autocomplete="off">
+      </label>
+      <label>Senha
+        <input type="password" id="accPass" placeholder="mínimo 6 caracteres" autocomplete="new-password">
+      </label>
+      <div class="form-actions">
+        <button type="button" class="control btn-primary" id="accCreateBtn">Criar conta</button>
+      </div>
+      <div class="form-status" id="accStatus"></div>
+    </div>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px;padding-top:12px;border-top:1px solid var(--border)">
+      <span class="hint" style="margin:0">Logado como <strong id="sessionUser">—</strong></span>
+      <button type="button" class="control btn-ghost" id="logoutBtn">Sair</button>
+    </div>
   </div>
 </div>
 
