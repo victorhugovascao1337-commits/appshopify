@@ -989,15 +989,28 @@
               <input type="password" id="oauthSecret" placeholder="shpss_…" autocomplete="off">
             </label>
 
-            <!-- URL que precisa estar cadastrada no Partner Dashboard -->
+            <!-- Configuração do app na Shopify: preenche a tela "URLs / Acesso à API" campo a campo -->
             <div class="wiz-note">
-              <strong>🔗 Cadastre esta URL no seu app antes de autorizar</strong>
-              <p>No <strong>Partner Dashboard → seu app → Configuration</strong>, em <strong>Allowed redirection URL(s)</strong>, cole exatamente:</p>
+              <strong>🛠 Criando o app? Preencha a tela da Shopify exatamente assim</strong>
+              <p class="wiz-hint" style="margin-top:4px">Partner Dashboard → Apps → Criar app → <strong>Configuration/URLs</strong>:</p>
+              <p style="margin-top:8px"><strong>1 · URL do app</strong></p>
+              <div class="redirect-box">
+                <code id="oauthAppUrl">carregando…</code>
+                <button type="button" class="control sm" id="copyAppUrlBtn">Copiar</button>
+              </div>
+              <p style="margin-top:8px"><strong>2 · "Incorporar app ao admin da Shopify"</strong> → <strong style="color:var(--warn)">DESMARQUE ☐</strong> — o painel roda fora do admin; incorporado dá erro de autenticação.</p>
+              <p style="margin-top:8px"><strong>3 · URL(s) de redirecionamento permitida(s)</strong></p>
               <div class="redirect-box">
                 <code id="oauthRedirectUri">carregando…</code>
                 <button type="button" class="control sm" id="copyRedirectBtn">Copiar</button>
               </div>
-              <p id="oauthAppUrlHint" class="wiz-hint" style="margin-top:8px"></p>
+              <p style="margin-top:8px"><strong>4 · "Usar fluxo de instalação legado"</strong> → <strong style="color:var(--live, #12b76a)">MARQUE ✅</strong> — é o fluxo OAuth que o painel usa.</p>
+              <p style="margin-top:8px"><strong>5 · Escopos</strong> (seção "Acesso à API" — cole a lista separada por vírgulas)</p>
+              <div class="redirect-box">
+                <code id="oauthScopesLine" style="white-space:normal;word-break:break-all">carregando…</code>
+                <button type="button" class="control sm" id="copyScopesLineBtn">Copiar</button>
+              </div>
+              <p id="oauthCfgHint" class="wiz-hint" style="margin-top:10px">Salvou o app? Copie o <strong>Client ID</strong> e o <strong>Client Secret</strong> (App setup → Client credentials) e cole nos campos acima. ⚠️ Conecte a loja <strong>logado na conta do painel que vai ser dona dela</strong>.</p>
             </div>
 
             <div class="wiz-status" id="oauthStatus"></div>

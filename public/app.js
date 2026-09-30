@@ -2536,21 +2536,29 @@ $('oauthToCustom').addEventListener('click', () => setWizardMode('custom'));
 async function loadOauthInfo() {
   try {
     const d = await api('/api/oauth/info');
+    $('oauthAppUrl').textContent = d.appUrl;
     $('oauthRedirectUri').textContent = d.redirectUri;
-    $('oauthAppUrlHint').innerHTML = `Em <strong>App URL</strong> use <code>${esc(d.appUrl)}</code>. Escopos pedidos: <code>${d.scopes.map(esc).join(', ')}</code>.` +
-      (d.hasConfig ? ' <strong>Client ID/Secret já salvos</strong> — pode deixar os campos em branco.' : '');
+    $('oauthScopesLine').textContent = (d.scopes || []).join(',');
+    if (d.hasConfig) {
+      $('oauthCfgHint').innerHTML = '<strong>Client ID/Secret já salvos</strong> de uma conexão anterior — pode deixar os campos em branco. ⚠️ Conecte a loja <strong>logado na conta do painel que vai ser dona dela</strong>.';
+    }
   } catch { /* mantém "carregando…" */ }
 }
 
-$('copyRedirectBtn').addEventListener('click', async () => {
-  const url = $('oauthRedirectUri').textContent;
-  try {
-    await navigator.clipboard.writeText(url);
-    showLojaToast('URL copiada', 'Cole em Allowed redirection URL(s) no Partner Dashboard.');
-  } catch {
-    showLojaToast('Copie manualmente', url);
-  }
-});
+function copiaCampo(btnId, elId, titulo, dica) {
+  $(btnId).addEventListener('click', async () => {
+    const valor = $(elId).textContent;
+    try {
+      await navigator.clipboard.writeText(valor);
+      showLojaToast(titulo, dica);
+    } catch {
+      showLojaToast('Copie manualmente', valor);
+    }
+  });
+}
+copiaCampo('copyAppUrlBtn', 'oauthAppUrl', '✓ URL do app copiada', 'Cole no campo "URL do app" na Shopify.');
+copiaCampo('copyRedirectBtn', 'oauthRedirectUri', '✓ URL de redirecionamento copiada', 'Cole em "URL(s) de redirecionamento permitida(s)".');
+copiaCampo('copyScopesLineBtn', 'oauthScopesLine', '✓ Escopos copiados', 'Cole no campo "Escopos" (Acesso à API), separado por vírgulas.');
 
 async function oauthStart() {
   const domain = $('oauthDomain').value.trim();
