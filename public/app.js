@@ -742,7 +742,7 @@ $('addStoreForm').addEventListener('submit', async (e) => {
 
 /* ================= COMMAND CENTER ================= */
 
-const PAGES = { overview: 'page-overview', lojas: 'page-lojas', command: 'page-command', ship: 'page-ship', fin: 'page-fin', flow: 'page-flow' };
+const PAGES = { overview: 'page-overview', lojas: 'page-lojas', command: 'page-command', ship: 'page-ship', mail: 'page-mail', crm: 'page-crm', inbox: 'page-inbox', fin: 'page-fin', flow: 'page-flow' };
 
 document.querySelectorAll('.tab-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
@@ -764,6 +764,9 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
     if (state.tab === 'command') lvLoad();
     if (state.tab === 'ship') shipLoad();
     if (state.tab === 'fin') finLoad();
+    if (state.tab === 'mail') mailLoad();
+    if (state.tab === 'crm') crmLoad();
+    if (state.tab === 'inbox') inboxLoad();
   });
 });
 
@@ -1572,6 +1575,330 @@ function drModal(title, html) {
 function drModalClose() { $('drModal').hidden = true; }
 
 /* ============================================================
+ * E-mails (Resend), CRM de recuperação e Suporte
+ * ============================================================ */
+
+const MAIL_TYPES = [
+  ['payment_approved', 'Pagamento aprovado'], ['order_created', 'Pedido criado (pendente)'],
+  ['ship_created', 'Rastreio gerado'], ['ship_step', 'Atualização da entrega'],
+  ['abandoned_1', 'Recuperação 1 — Quase lá (1h)'], ['abandoned_2', 'Recuperação 2 — Ainda guardamos (24h)'],
+  ['abandoned_3', 'Recuperação 3 — Estoque limitado (48h)'], ['abandoned_4', 'Recuperação 4 — Última tentativa (72h)'],
+];
+const MAIL_LANGS = { pt: 'Português', es: 'Espanhol', en: 'Inglês', de: 'Alemão' };
+
+async function mailLoad() {
+  const root = $('mailRoot');
+  root.innerHTML = '<div class="placeholder-empty"><span class="pe-ico">✉️</span><div class="pe-title">Carregando…</div></div>';
+  let c;
+  try { c = await api('/api/email/config'); } catch (e) {
+    root.innerHTML = `<div class="placeholder-empty"><span class="pe-ico">⚠️</span><div class="pe-title">Erro</div><div>${esc(e.message)}</div></div>`;
+    return;
+  }
+  const AUTOS = [
+    ['orderCreated', 'Pedido criado', 'Para pedidos com pagamento ainda pendente.'],
+    ['paymentApproved', 'Pagamento aprovado', 'Uma confirmação por pedido pago.'],
+    ['shipping', 'Preparação e expedição', 'E-mail quando o envio sai (etapa "Enviado").'],
+    ['delivery', 'Atualizações da entrega', 'Trânsito, chegada ao país, saiu pra entrega e entregue.'],
+    ['abandoned', 'Carrinho abandonado', 'Sequência de recuperação do CRM (4 e-mails), só com consentimento.'],
+  ];
+  root.innerHTML = `
+  <section class="card">
+    <div class="card-head"><h2>Resend — envio de e-mails</h2><span class="card-sub">${c.ready ? '<span class="status-badge st-paid">● Envio real ativo</span>' : '<span class="status-badge st-pending">● Pendente — configure abaixo</span>'}</span></div>
+    <p class="hint">Crie a conta em <code>resend.com</code>, verifique seu domínio (DNS/DKIM) e gere a chave de API. A configuração da chave não confirma a verificação do DNS — teste com um envio.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px">
+      <div><label class="field-label">Chave da API ${c.apiKeySet ? '<span style="color:var(--good)">· salva ✓</span>' : ''}</label><input id="mKey" class="control" style="width:100%" type="password" placeholder="${c.apiKeySet ? 'mantida — digite pra trocar' : 're_...'}" autocomplete="off"></div>
+      <div><label class="field-label">Remetente (pedidos)</label><input id="mFrom" class="control" style="width:100%" value="${esc(c.fromEmail || '')}" placeholder="orders@seudominio.com"></div>
+      <div><label class="field-label">Nome do remetente</label><input id="mName" class="control" style="width:100%" value="${esc(c.fromName || '')}" placeholder="Sua Loja"></div>
+      <div><label class="field-label">Suporte / responder para</label><input id="mReply" class="control" style="width:100%" value="${esc(c.replyTo || '')}" placeholder="help@seudominio.com"></div>
+      <div><label class="field-label">Idioma padrão</label><select id="mLang" class="control" style="width:100%">${Object.entries(MAIL_LANGS).map(([v, l]) => `<option value="${v}" ${c.lang === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;margin-top:14px">
+      <button class="control btn-primary" id="mSaveCfg">Salvar configuração</button>
+      <span class="hint" style="margin:0" id="mCfgMsg"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Automações de e-mail</h2><span class="card-sub">As notificações da vitrine não são duplicadas — confira o que a Shopify ainda envia</span></div>
+    <div style="display:grid;gap:10px">
+      ${AUTOS.map(([k, titulo, desc]) => `
+        <label style="display:flex;align-items:center;gap:12px;background:var(--surface-solid);border:1px solid var(--border);border-radius:12px;padding:11px 14px;cursor:pointer">
+          <input type="checkbox" data-auto="${k}" ${c.automations[k] ? 'checked' : ''}>
+          <span style="flex:1"><strong style="font-size:13.5px">${titulo}</strong><br><span class="hint" style="margin:0">${desc}</span></span>
+        </label>`).join('')}
+    </div>
+    <label style="display:flex;align-items:center;gap:10px;margin-top:14px;font-size:13px;cursor:pointer">
+      <input type="checkbox" id="mAntiDup" ${c.antiDup ? 'checked' : ''}>
+      <span>Conferi quais mensagens continuam sendo enviadas pela Shopify, pra evitar duplicação.</span>
+    </label>
+    <div style="display:flex;align-items:center;gap:12px;margin-top:12px">
+      <button class="control btn-primary" id="mSaveAuto">Guardar automações</button>
+      <span class="hint" style="margin:0" id="mAutoMsg"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Pré-visualização & teste</h2><span class="card-sub">Veja cada modelo em cada idioma e envie um teste pra você</span></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin-bottom:12px">
+      <div><label class="field-label">Modelo</label><select id="mPvType" class="control">${MAIL_TYPES.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></div>
+      <div><label class="field-label">Idioma</label><select id="mPvLang" class="control">${Object.entries(MAIL_LANGS).map(([v, l]) => `<option value="${v}" ${c.lang === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div><label class="field-label">Enviar teste para</label><input id="mPvTo" class="control" placeholder="voce@email.com" style="width:220px"></div>
+      <button class="control btn-primary" id="mPvSend" ${c.ready ? '' : 'disabled title="Configure o Resend primeiro"'}>Enviar teste</button>
+      <span class="hint" style="margin:0" id="mPvMsg"></span>
+    </div>
+    <iframe id="mPvFrame" style="width:100%;height:430px;border:1px solid var(--border);border-radius:14px;background:#f4f5fb"></iframe>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Histórico de envios</h2><button class="control sm" id="mLogRefresh">Atualizar</button></div>
+    <div class="table-scroll"><table class="data-table"><thead><tr><th>Quando</th><th>Para</th><th>Tipo</th><th>Assunto</th></tr></thead><tbody id="mLogRows"><tr><td colspan="4" class="sc-empty">Carregando…</td></tr></tbody></table></div>
+  </section>`;
+
+  const refreshPreview = () => { $('mPvFrame').src = `/api/email/preview?type=${$('mPvType').value}&lang=${$('mPvLang').value}`; };
+  $('mPvType').addEventListener('change', refreshPreview);
+  $('mPvLang').addEventListener('change', refreshPreview);
+  refreshPreview();
+
+  $('mSaveCfg').addEventListener('click', async () => {
+    $('mCfgMsg').textContent = 'Salvando…';
+    try {
+      const body = { fromEmail: $('mFrom').value, fromName: $('mName').value, replyTo: $('mReply').value, lang: $('mLang').value };
+      const k = $('mKey').value.trim();
+      if (k) body.apiKey = k;
+      const res = await fetch('/api/email/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+      showLojaToast('✉️ E-mails', j.ready ? 'Configuração salva — envio real ativo!' : 'Salvo. Falta chave e/ou remetente pra ativar o envio.');
+      mailLoad();
+    } catch (e) { $('mCfgMsg').textContent = e.message; }
+  });
+
+  $('mSaveAuto').addEventListener('click', async () => {
+    $('mAutoMsg').textContent = 'Salvando…';
+    try {
+      const automations = {};
+      root.querySelectorAll('[data-auto]').forEach((el) => { automations[el.dataset.auto] = el.checked; });
+      const res = await fetch('/api/email/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ automations, antiDup: $('mAntiDup').checked }) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+      $('mAutoMsg').textContent = '✓ Automações guardadas.';
+    } catch (e) { $('mAutoMsg').textContent = e.message; }
+  });
+
+  $('mPvSend').addEventListener('click', async () => {
+    $('mPvMsg').textContent = 'Enviando…';
+    try {
+      const res = await fetch('/api/email/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: $('mPvType').value, lang: $('mPvLang').value, to: $('mPvTo').value.trim() }) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+      $('mPvMsg').textContent = '✓ Teste enviado — confira a caixa de entrada.';
+      carregaLog();
+    } catch (e) { $('mPvMsg').textContent = e.message; }
+  });
+
+  async function carregaLog() {
+    try {
+      const d = await api('/api/email/log');
+      $('mLogRows').innerHTML = (d.log || []).map((l) => `<tr><td>${timeAgo(l.at)}</td><td>${esc(l.to)}</td><td class="mono">${esc(l.type)}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.subject || '—')}</td></tr>`).join('')
+        || '<tr><td colspan="4" class="sc-empty">Nenhum e-mail enviado ainda.</td></tr>';
+    } catch { $('mLogRows').innerHTML = '<tr><td colspan="4" class="sc-empty">Erro ao carregar.</td></tr>'; }
+  }
+  $('mLogRefresh').addEventListener('click', carregaLog);
+  carregaLog();
+}
+
+/* ---------- CRM de recuperação ---------- */
+
+async function crmLoad() {
+  const root = $('crmRoot');
+  root.innerHTML = '<div class="placeholder-empty"><span class="pe-ico">🛒</span><div class="pe-title">Carregando…</div><div>Buscando checkouts abandonados.</div></div>';
+  let d;
+  try { d = await api('/api/crm'); } catch (e) {
+    root.innerHTML = `<div class="placeholder-empty"><span class="pe-ico">⚠️</span><div class="pe-title">Erro</div><div>${esc(e.message)}</div></div>`;
+    return;
+  }
+  const statusBadgeCrm = d.enabled && d.ready
+    ? '<span class="status-badge st-paid">● Automação ativa · envio real</span>'
+    : `<span class="status-badge st-pending">● ${!d.ready ? 'Resend pendente' : 'Automação desativada'}</span>`;
+  root.innerHTML = `
+  <section class="card">
+    <div class="card-head">
+      <h2>CRM de recuperação</h2>
+      <div style="display:flex;gap:8px;align-items:center">${statusBadgeCrm}
+        <button class="control sm" id="crmRun" ${d.enabled && d.ready ? '' : 'disabled title="Ligue a automação na aba E-mails"'}>✉ Correr agora</button>
+        <button class="control sm" id="crmCfg">Configurar automação</button>
+      </div>
+    </div>
+    <p class="hint">Recupera checkouts abandonados das lojas de checkout em <strong>4 e-mails</strong> (1h, 24h, 48h e 72h). Só entram checkouts <strong>identificados, com consentimento</strong> e sem compra posterior na janela de 7 dias.</p>
+    <div class="tiles" style="grid-template-columns:repeat(4,1fr)">
+      <div class="tile"><div class="tile-label" style="margin-bottom:8px">E-mails enviados</div><div class="tile-value sm">${fmtInt(d.kpis.emailsEnviados)}</div></div>
+      <div class="tile"><div class="tile-label" style="margin-bottom:8px">Checkouts abordados</div><div class="tile-value sm">${fmtInt(d.kpis.abordados)}</div></div>
+      <div class="tile"><div class="tile-label" style="margin-bottom:8px">Recuperados</div><div class="tile-value sm">${fmtInt(d.kpis.recuperados)}</div></div>
+      <div class="tile"><div class="tile-label" style="margin-bottom:8px">Receita recuperada</div><div class="tile-value sm">${d.kpis.receitaRecuperada ? fmtMoney(d.kpis.receitaRecuperada) : '—'}</div></div>
+    </div>
+    <div class="table-scroll" style="margin-top:12px"><table class="data-table"><thead><tr><th>Etapa</th><th>Intervalo</th><th>Tema</th><th class="num">Enviados</th></tr></thead><tbody>
+      ${d.stages.map((s, i) => `<tr><td>${i + 1}</td><td>${s.horas} h depois</td><td>${esc(s.nome)}</td><td class="num">${fmtInt(s.enviados)}</td></tr>`).join('')}
+    </tbody></table></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Checkouts elegíveis</h2><span class="card-sub">${fmtInt(d.eligible.length)} registrado${d.eligible.length === 1 ? '' : 's'}</span></div>
+    ${(d.erros || []).map((e2) => `<p class="hint" style="color:var(--warn)">⚠ ${esc(e2)}</p>`).join('')}
+    <div class="table-scroll"><table class="data-table"><thead><tr><th>Loja</th><th>E-mail</th><th>País/idioma</th><th class="num">Valor</th><th>Criado</th><th>Sequência</th></tr></thead><tbody>
+      ${d.eligible.map((ck) => `<tr>
+        <td>${esc(ck.storeName)}</td>
+        <td>${esc(ck.email)}</td>
+        <td>${esc(ck.locale || '—')}</td>
+        <td class="num">${(ck.total).toLocaleString('pt-BR', { style: 'currency', currency: ck.currency || 'USD' })}</td>
+        <td>${timeAgo(ck.createdAt)}</td>
+        <td>${ck.etapas.map((on, i) => `<span class="status-badge ${on ? 'st-paid' : 'st-other'}" style="margin-right:3px">${i + 1}</span>`).join('')}</td>
+      </tr>`).join('') || '<tr><td colspan="6" class="sc-empty">Nenhum checkout abandonado elegível no momento.</td></tr>'}
+    </tbody></table></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Pedidos recuperados</h2><span class="card-sub">Pagos depois de um e-mail de recuperação</span></div>
+    <div class="table-scroll"><table class="data-table"><thead><tr><th>E-mail</th><th>Pedido</th><th class="num">Valor</th><th>Quando</th></tr></thead><tbody>
+      ${(d.recuperados || []).map((r) => `<tr><td>${esc(r.email)}</td><td class="mono">${esc(r.number)}</td><td class="num">${(r.total).toLocaleString('pt-BR', { style: 'currency', currency: r.currency || 'USD' })}</td><td>${timeAgo(r.at)}</td></tr>`).join('')
+        || '<tr><td colspan="4" class="sc-empty">Ainda sem recuperações — os pedidos pagos depois de um e-mail aparecem aqui.</td></tr>'}
+    </tbody></table></div>
+  </section>`;
+
+  $('crmCfg').addEventListener('click', () => document.querySelector('.tab-btn[data-tab="mail"]').click());
+  $('crmRun').addEventListener('click', async () => {
+    $('crmRun').disabled = true;
+    $('crmRun').textContent = 'Enviando…';
+    try {
+      const res = await fetch('/api/crm/run', { method: 'POST' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+      showLojaToast('🛒 CRM', j.skipped ? j.reason : `${fmtInt(j.enviados || 0)} e-mail(s) de recuperação enviados.`);
+      crmLoad();
+    } catch (e) { showLojaToast('⚠ CRM', e.message); crmLoad(); }
+  });
+}
+
+/* ---------- Suporte (caixa de entrada) ---------- */
+
+const inboxState = { sel: null, data: null };
+
+async function inboxLoad() {
+  const root = $('inboxRoot');
+  if (!inboxState.data) root.innerHTML = '<div class="placeholder-empty"><span class="pe-ico">💬</span><div class="pe-title">Carregando…</div></div>';
+  let d;
+  try { d = await api('/api/inbox'); } catch (e) {
+    root.innerHTML = `<div class="placeholder-empty"><span class="pe-ico">⚠️</span><div class="pe-title">Erro</div><div>${esc(e.message)}</div></div>`;
+    return;
+  }
+  inboxState.data = d;
+  const sel = d.conversas.find((x) => x.id === inboxState.sel) || null;
+  root.innerHTML = `
+  <section class="card">
+    <div class="card-head">
+      <h2>Caixa de entrada</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="status-badge st-other">Todas ${fmtInt(d.contagem.todas)}</span>
+        <span class="status-badge st-pending">Abertas ${fmtInt(d.contagem.abertas)}</span>
+        <span class="status-badge st-paid">Resolvidas ${fmtInt(d.contagem.resolvidas)}</span>
+        <button class="control sm" id="ibRefresh">Atualizar</button>
+        <button class="control sm btn-primary" id="ibNew">Novo contato</button>
+      </div>
+    </div>
+    <p class="hint">Conversas de suporte ligadas aos pedidos. Recebeu resposta do cliente no seu e-mail? Use <strong>"Registrar recebida"</strong> dentro da conversa pra manter o histórico aqui.</p>
+    <div style="display:grid;grid-template-columns:minmax(230px,320px) 1fr;gap:14px;align-items:start">
+      <div style="display:grid;gap:8px;max-height:460px;overflow:auto">
+        ${d.conversas.map((cv) => `
+          <button class="control" data-ib="${cv.id}" style="text-align:left;display:block;${cv.id === inboxState.sel ? 'border-color:var(--accent);background:var(--accent-soft)' : ''}">
+            <strong style="font-size:13px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(cv.email)}</strong>
+            <span style="font-size:12px;color:var(--text-secondary);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(cv.subject)}</span>
+            <span class="hint" style="margin:0">${timeAgo(cv.updatedAt)} · <span class="status-badge ${cv.status === 'resolvido' ? 'st-paid' : 'st-pending'}">${cv.status}</span></span>
+          </button>`).join('') || '<span class="hint">Nenhuma conversa ainda — clique em "Novo contato".</span>'}
+      </div>
+      <div id="ibDetail">${sel ? '' : '<div class="placeholder-empty"><span class="pe-ico">👈</span><div class="pe-title">Selecione uma conversa</div></div>'}</div>
+    </div>
+  </section>`;
+
+  $('ibRefresh').addEventListener('click', () => { inboxLoad(); });
+  $('ibNew').addEventListener('click', inboxNewModal);
+  root.querySelectorAll('[data-ib]').forEach((b) => b.addEventListener('click', () => { inboxState.sel = b.dataset.ib; inboxLoad(); }));
+  if (sel) inboxRenderDetail(sel);
+}
+
+async function inboxRenderDetail(cv) {
+  const box = $('ibDetail');
+  box.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <strong>${esc(cv.email)}</strong>
+      <span class="status-badge ${cv.status === 'resolvido' ? 'st-paid' : 'st-pending'}">${cv.status}</span>
+      <button class="control sm" id="ibToggle">${cv.status === 'resolvido' ? 'Reabrir' : '✓ Marcar resolvida'}</button>
+    </div>
+    <div class="hint" id="ibCtx" style="margin-bottom:10px">Buscando pedidos deste cliente…</div>
+    <div style="display:grid;gap:8px;max-height:260px;overflow:auto;margin-bottom:12px" id="ibMsgs">
+      ${cv.msgs.map((m) => `
+        <div style="max-width:85%;${m.dir === 'out' ? 'margin-left:auto;background:var(--accent-tint);' : 'background:var(--surface-solid);'}border:1px solid var(--border);border-radius:12px;padding:9px 12px">
+          <div style="font-size:13px;white-space:pre-wrap">${esc(m.text)}</div>
+          <div class="hint" style="margin:4px 0 0;text-align:right">${m.dir === 'out' ? 'Equipe' : 'Cliente'} · ${timeAgo(m.at)}</div>
+        </div>`).join('')}
+    </div>
+    <textarea id="ibReply" class="control" style="width:100%;min-height:80px;resize:vertical" placeholder="Escreva a resposta pro cliente…"></textarea>
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+      <button class="control btn-primary sm" id="ibSend">Enviar resposta</button>
+      <button class="control sm" id="ibLogIn" title="Cole aqui uma resposta que o cliente mandou pro seu e-mail">Registrar recebida</button>
+      <span class="hint" style="margin:0" id="ibMsg"></span>
+    </div>`;
+  api(`/api/inbox/context?email=${encodeURIComponent(cv.email)}`).then((c) => {
+    $('ibCtx').innerHTML = (c.pedidos || []).length
+      ? '🧾 Pedidos: ' + c.pedidos.map((p) => `<strong>${esc(p.number)}</strong> (${esc(p.storeName)} · ${(p.total).toLocaleString('pt-BR', { style: 'currency', currency: p.currency || 'USD' })})`).join(' · ')
+      : 'Nenhum pedido recente com este e-mail.';
+  }).catch(() => { $('ibCtx').textContent = ''; });
+
+  const enviar = async (modo) => {
+    const texto = $('ibReply').value.trim();
+    if (!texto) { $('ibMsg').textContent = 'Escreva a mensagem.'; return; }
+    $('ibMsg').textContent = modo === 'recebido' ? 'Registrando…' : 'Enviando…';
+    try {
+      const res = await fetch('/api/inbox/reply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: cv.id, message: texto, modo }) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+      inboxLoad();
+    } catch (e) { $('ibMsg').textContent = e.message; }
+  };
+  $('ibSend').addEventListener('click', () => enviar('enviar'));
+  $('ibLogIn').addEventListener('click', () => enviar('recebido'));
+  $('ibToggle').addEventListener('click', async () => {
+    await fetch('/api/inbox/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: cv.id, status: cv.status === 'resolvido' ? 'aberto' : 'resolvido' }) }).catch(() => {});
+    inboxLoad();
+  });
+}
+
+function inboxNewModal() {
+  drModal('Novo contato para cliente', `
+    <p class="hint">A mensagem é enviada <strong>de verdade</strong> pelo Resend (remetente de suporte). Pra registrar um e-mail que o cliente mandou, marque a opção abaixo.</p>
+    <label class="field-label">E-mail do cliente</label><input id="nmEmail" class="control" style="width:100%;margin-bottom:10px" placeholder="cliente@email.com">
+    <label class="field-label">Assunto</label><input id="nmSubject" class="control" style="width:100%;margin-bottom:10px" placeholder="Sobre o seu pedido…">
+    <label class="field-label">Mensagem</label><textarea id="nmMsg" class="control" style="width:100%;min-height:110px;resize:vertical"></textarea>
+    <label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-size:13px;cursor:pointer"><input type="checkbox" id="nmRecebido"> É um e-mail <strong>recebido</strong> do cliente (só registrar, não enviar)</label>
+    <div style="display:flex;gap:10px;align-items:center">
+      <button class="control btn-primary" id="nmSend">Enviar mensagem</button>
+      <span class="form-status" id="nmStatus" style="margin:0"></span>
+    </div>`);
+  $('nmRecebido').addEventListener('change', () => { $('nmSend').textContent = $('nmRecebido').checked ? 'Registrar conversa' : 'Enviar mensagem'; });
+  $('nmSend').addEventListener('click', async () => {
+    $('nmStatus').textContent = 'Processando…';
+    try {
+      const res = await fetch('/api/inbox/new', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: $('nmEmail').value.trim(), subject: $('nmSubject').value.trim(), message: $('nmMsg').value, modo: $('nmRecebido').checked ? 'recebido' : 'enviar' }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+      drModalClose();
+      inboxLoad();
+    } catch (e) { $('nmStatus').textContent = e.message; }
+  });
+}
+
+/* ============================================================
  * Tour guiado — tutorial passo a passo do painel
  * ============================================================ */
 
@@ -1583,6 +1910,9 @@ const TOUR_STEPS = [
   { target: '.tab-btn[data-tab="flow"]', title: 'Flow — o coração', text: 'Defina quem é a vitrine, monte o pool de checkouts com rotação automática e limites diários, e mapeie os produtos (AutoMatch por SKU ou par a par).' },
   { target: '.tab-btn[data-tab="command"]', title: 'Ao vivo', text: 'Globo 3D ⇄ mapa com visitantes e pedidos em tempo real (estilo Shopify Live View), alertas e saúde por loja.' },
   { target: '.tab-btn[data-tab="ship"]', title: 'Rastreio', text: 'Gere um código de rastreio próprio pra cada pedido pago. O cliente acompanha num portal público com linha do tempo que se revela aos poucos — e você ainda registra o código real da transportadora quando chegar.' },
+  { target: '.tab-btn[data-tab="mail"]', title: 'E-mails', text: 'Conecte o Resend e ligue as automações: confirmação de pedido, pagamento aprovado, rastreio e atualizações de entrega — em 4 idiomas, com pré-visualização e teste.' },
+  { target: '.tab-btn[data-tab="crm"]', title: 'CRM de recuperação', text: 'Checkouts abandonados viram vendas: sequência automática de 4 e-mails (1h, 24h, 48h e 72h), só pra quem deu consentimento, com KPIs de receita recuperada.' },
+  { target: '.tab-btn[data-tab="inbox"]', title: 'Suporte', text: 'Caixa de entrada das conversas com clientes, com o contexto dos pedidos deles ao lado. Responda direto daqui — o e-mail sai de verdade.' },
   { target: '.tab-btn[data-tab="fin"]', title: 'Financeiro', text: 'Custos de produto e gateway, períodos de gastos com anúncios, payouts do Shopify Payments por loja e a fila de processamento com retry.' },
   { target: '#manageBtn', title: 'Gerenciar lojas & contas', text: 'Adicione/remova lojas e crie contas separadas — cada login tem um ambiente totalmente isolado, com código de convite pra sua equipe se cadastrar.' },
   { target: '#tourBtn', title: 'Pronto! 🚀', text: 'Qualquer dúvida, reabra este tutorial aqui. Boas vendas!' },

@@ -1812,6 +1812,8 @@ if (require.main === module) {
         await db.runAsAccount(ns, async () => {
           await runPostPurchaseCycle().catch(() => {});
           await runCapiCycle().catch(() => {});
+          await runEmailCycle(`http://localhost:${PORT}`).catch(() => {});
+          await runCrmCycle().catch(() => {});
         });
       }
     } catch { /* próximo tick tenta de novo */ }
@@ -1836,12 +1838,17 @@ app.all('/api/cron/post-purchase', async (req, res) => {
     const accounts = await loadAccounts();
     const namespaces = [...new Set(['', ...accounts.map((a) => a.ns || '')])];
     const porConta = {};
+    const baseUrl = appBaseUrl(req);
     for (const ns of namespaces) {
       porConta[ns || 'admin'] = await db.runAsAccount(ns, async () => {
         const r = await runPostPurchaseCycle().catch((e2) => ({ error: e2.message }));
         let tracking = null;
         try { tracking = await runCapiCycle(); } catch (e3) { tracking = { error: e3.message }; }
-        return { ...r, tracking };
+        let emails = null;
+        try { emails = await runEmailCycle(baseUrl); } catch (e4) { emails = { error: e4.message }; }
+        let crm = null;
+        try { crm = await runCrmCycle(); } catch (e5) { crm = { error: e5.message }; }
+        return { ...r, tracking, emails, crm };
       });
     }
     res.json({ ok: true, at: new Date().toISOString(), ...porConta });
@@ -2399,6 +2406,549 @@ app.post('/api/queue/retry', async (req, res) => {
     if (kind === 'postpurchase') return res.json({ ok: true, result: await runPostPurchaseCycle() });
     if (kind === 'payouts') { cache.clear(); return res.json({ ok: true, result: 'cache limpo — recarregue os payouts' }); }
     res.status(400).json({ error: 'Tarefa desconhecida.' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* ============================================================
+ * E-mails transacionais (Resend), CRM de recuperação e Suporte
+ * ============================================================ */
+
+const EMAILCFG_DEFAULTS = {
+  apiKey: '',            // chave do Resend (criptografada no banco)
+  fromEmail: '',         // ex.: orders@seudominio.com
+  fromName: '',          // nome exibido no remetente
+  replyTo: '',           // ex.: help@seudominio.com
+  lang: 'en',            // idioma padrão dos e-mails
+  automations: { orderCreated: false, paymentApproved: false, shipping: false, delivery: false, abandoned: false },
+  antiDup: false,        // "conferi o que a Shopify ainda envia" (trava anti-duplicação)
+};
+
+async function loadEmailCfg() {
+  const raw = { ...EMAILCFG_DEFAULTS, ...((await db.readDoc('emailcfg', {})) || {}) };
+  try { raw.apiKey = raw.apiKey ? db.decrypt(raw.apiKey) : ''; } catch { raw.apiKey = ''; }
+  raw.automations = { ...EMAILCFG_DEFAULTS.automations, ...(raw.automations || {}) };
+  return raw;
+}
+
+async function saveEmailCfg(cfg) {
+  return db.writeDoc('emailcfg', { ...cfg, apiKey: cfg.apiKey ? db.encrypt(cfg.apiKey) : '' });
+}
+
+const emailReady = (cfg) => !!(cfg.apiKey && cfg.fromEmail);
+
+/* textos dos e-mails em 4 idiomas */
+const MAIL_I18N = {
+  en: {
+    greet: (n) => n ? `Hi ${n},` : 'Hi,',
+    order_created: { s: (o) => `We received your order ${o.number}`, b: 'Your order was created and is waiting for payment confirmation. We will email you as soon as it is approved.', cta: null },
+    payment_approved: { s: (o) => `Payment confirmed — order ${o.number} ✅`, b: 'Great news: your payment was approved and your order is now being processed. We will send your tracking code shortly.', cta: null },
+    ship_created: { s: (o) => `Your tracking code for order ${o.number} 📦`, b: 'Your package is on the way! Track every step of the delivery with the code below.', cta: 'Track my order', codeLabel: 'Tracking code' },
+    ship_step: { s: (o, step) => `Delivery update — ${step}`, b: 'Your delivery just moved forward. Current status:', cta: 'See full timeline' },
+    abandoned_1: { s: () => 'You are almost there…', b: 'Your cart is saved and ready — complete your order in one click before it expires.', cta: 'Finish my order' },
+    abandoned_2: { s: () => 'We saved your cart 🛒', b: 'Still thinking? Your items are reserved. Come back and finish whenever you want.', cta: 'Return to checkout' },
+    abandoned_3: { s: () => 'Limited stock on your items', b: 'The items in your cart are selling fast. Secure yours before they run out.', cta: 'Complete my purchase' },
+    abandoned_4: { s: () => 'Last chance — your cart expires soon', b: 'This is our final reminder: your cart will be released soon. Finish now to keep your items.', cta: 'Finish now' },
+  },
+  pt: {
+    greet: (n) => n ? `Olá, ${n}!` : 'Olá!',
+    order_created: { s: (o) => `Recebemos seu pedido ${o.number}`, b: 'Seu pedido foi criado e está aguardando a confirmação do pagamento. Assim que aprovar, a gente te avisa por aqui.', cta: null },
+    payment_approved: { s: (o) => `Pagamento aprovado — pedido ${o.number} ✅`, b: 'Boa notícia: seu pagamento foi aprovado e o pedido já está em processamento. Em breve enviamos seu código de rastreio.', cta: null },
+    ship_created: { s: (o) => `Seu código de rastreio do pedido ${o.number} 📦`, b: 'Seu pacote está a caminho! Acompanhe cada etapa da entrega com o código abaixo.', cta: 'Rastrear meu pedido', codeLabel: 'Código de rastreio' },
+    ship_step: { s: (o, step) => `Atualização da entrega — ${step}`, b: 'Sua entrega acabou de avançar. Situação atual:', cta: 'Ver linha do tempo' },
+    abandoned_1: { s: () => 'Quase lá…', b: 'Seu carrinho está salvo e pronto — conclua o pedido em um clique antes que expire.', cta: 'Finalizar pedido' },
+    abandoned_2: { s: () => 'Guardamos seu carrinho 🛒', b: 'Ainda pensando? Seus itens estão reservados. Volte e finalize quando quiser.', cta: 'Voltar ao checkout' },
+    abandoned_3: { s: () => 'Estoque limitado nos seus itens', b: 'Os itens do seu carrinho estão saindo rápido. Garanta os seus antes que acabem.', cta: 'Concluir compra' },
+    abandoned_4: { s: () => 'Última chance — seu carrinho expira em breve', b: 'Este é nosso último lembrete: seu carrinho será liberado em breve. Finalize agora pra garantir.', cta: 'Finalizar agora' },
+  },
+  es: {
+    greet: (n) => n ? `¡Hola, ${n}!` : '¡Hola!',
+    order_created: { s: (o) => `Recibimos tu pedido ${o.number}`, b: 'Tu pedido fue creado y está esperando la confirmación del pago. Te avisaremos en cuanto se apruebe.', cta: null },
+    payment_approved: { s: (o) => `Pago aprobado — pedido ${o.number} ✅`, b: 'Buenas noticias: tu pago fue aprobado y el pedido ya está en proceso. Pronto enviaremos tu código de seguimiento.', cta: null },
+    ship_created: { s: (o) => `Tu código de seguimiento del pedido ${o.number} 📦`, b: '¡Tu paquete está en camino! Sigue cada etapa de la entrega con el código de abajo.', cta: 'Rastrear mi pedido', codeLabel: 'Código de seguimiento' },
+    ship_step: { s: (o, step) => `Actualización de entrega — ${step}`, b: 'Tu entrega acaba de avanzar. Estado actual:', cta: 'Ver línea de tiempo' },
+    abandoned_1: { s: () => 'Estás a un paso…', b: 'Tu carrito está guardado y listo — completa tu pedido en un clic antes de que expire.', cta: 'Finalizar pedido' },
+    abandoned_2: { s: () => 'Guardamos tu carrito 🛒', b: '¿Aún lo piensas? Tus artículos están reservados. Vuelve y termina cuando quieras.', cta: 'Volver al checkout' },
+    abandoned_3: { s: () => 'Stock limitado en tus artículos', b: 'Los artículos de tu carrito se agotan rápido. Asegura los tuyos antes de que se acaben.', cta: 'Completar compra' },
+    abandoned_4: { s: () => 'Última oportunidad — tu carrito expira pronto', b: 'Este es nuestro último recordatorio: tu carrito se liberará pronto. Finaliza ahora para asegurar tus artículos.', cta: 'Finalizar ahora' },
+  },
+  de: {
+    greet: (n) => n ? `Hallo ${n},` : 'Hallo,',
+    order_created: { s: (o) => `Wir haben Ihre Bestellung ${o.number} erhalten`, b: 'Ihre Bestellung wurde erstellt und wartet auf die Zahlungsbestätigung. Wir melden uns, sobald sie genehmigt ist.', cta: null },
+    payment_approved: { s: (o) => `Zahlung bestätigt — Bestellung ${o.number} ✅`, b: 'Gute Nachrichten: Ihre Zahlung wurde bestätigt und die Bestellung wird bearbeitet. Ihre Sendungsnummer folgt in Kürze.', cta: null },
+    ship_created: { s: (o) => `Ihre Sendungsnummer zur Bestellung ${o.number} 📦`, b: 'Ihr Paket ist unterwegs! Verfolgen Sie jeden Schritt der Lieferung mit dem Code unten.', cta: 'Sendung verfolgen', codeLabel: 'Sendungsnummer' },
+    ship_step: { s: (o, step) => `Lieferupdate — ${step}`, b: 'Ihre Lieferung ist einen Schritt weiter. Aktueller Status:', cta: 'Zeitleiste ansehen' },
+    abandoned_1: { s: () => 'Fast geschafft…', b: 'Ihr Warenkorb ist gespeichert — schließen Sie Ihre Bestellung mit einem Klick ab, bevor er abläuft.', cta: 'Bestellung abschließen' },
+    abandoned_2: { s: () => 'Wir haben Ihren Warenkorb gespeichert 🛒', b: 'Noch unentschlossen? Ihre Artikel sind reserviert. Kommen Sie zurück, wann immer Sie möchten.', cta: 'Zurück zum Checkout' },
+    abandoned_3: { s: () => 'Begrenzter Vorrat bei Ihren Artikeln', b: 'Die Artikel in Ihrem Warenkorb sind schnell vergriffen. Sichern Sie sich Ihre, bevor sie ausverkauft sind.', cta: 'Kauf abschließen' },
+    abandoned_4: { s: () => 'Letzte Chance — Ihr Warenkorb läuft bald ab', b: 'Das ist unsere letzte Erinnerung: Ihr Warenkorb wird bald freigegeben. Schließen Sie jetzt ab.', cta: 'Jetzt abschließen' },
+  },
+};
+
+function mailEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// layout único, limpo e responsivo, usado por todos os tipos
+function renderEmailHtml({ fromName, greet, body, code, codeLabel, ctaLabel, ctaUrl, extra }) {
+  return `<!doctype html><html><body style="margin:0;background:#f4f5fb;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#1a2030">
+  <div style="max-width:520px;margin:0 auto;padding:28px 16px">
+    <div style="text-align:center;font-weight:800;font-size:15px;letter-spacing:.06em;color:#4b5068;padding:6px 0 16px">${mailEsc(fromName || '')}</div>
+    <div style="background:#ffffff;border:1px solid #e7e9f3;border-radius:16px;padding:26px 24px">
+      <p style="margin:0 0 12px;font-size:15px;font-weight:650">${mailEsc(greet)}</p>
+      <p style="margin:0 0 16px;font-size:14px;line-height:1.65;color:#434a60">${mailEsc(body)}</p>
+      ${code ? `<div style="text-align:center;margin:18px 0"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#9499b3;margin-bottom:6px">${mailEsc(codeLabel || '')}</div><div style="display:inline-block;background:#efedff;border:1px dashed #b9b3f5;border-radius:10px;padding:10px 18px;font-family:Consolas,monospace;font-weight:700;letter-spacing:2px;font-size:17px">${mailEsc(code)}</div></div>` : ''}
+      ${extra ? `<p style="margin:0 0 16px;font-size:14px;line-height:1.65;color:#434a60">${mailEsc(extra)}</p>` : ''}
+      ${ctaLabel && ctaUrl ? `<div style="text-align:center;margin-top:20px"><a href="${mailEsc(ctaUrl)}" style="display:inline-block;background:linear-gradient(135deg,#7c5cff,#4f46e5);color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 26px;border-radius:12px">${mailEsc(ctaLabel)}</a></div>` : ''}
+    </div>
+    <p style="text-align:center;font-size:11px;color:#9499b3;margin-top:14px">${mailEsc(fromName || '')}</p>
+  </div></body></html>`;
+}
+
+// monta assunto+HTML de qualquer tipo, com dados reais ou de amostra
+function buildEmail(cfg, type, lang, data) {
+  const L = MAIL_I18N[lang] || MAIL_I18N.en;
+  const T = L[type.startsWith('abandoned') ? type : type] || null;
+  if (!T) throw new Error(`Tipo de e-mail desconhecido: ${type}`);
+  const o = data.order || { number: '#1234' };
+  const stepLabel = data.stepLabel || '';
+  const subject = type === 'ship_step' ? T.s(o, stepLabel) : T.s(o);
+  const html = renderEmailHtml({
+    fromName: cfg.fromName || cfg.fromEmail,
+    greet: L.greet(data.name || ''),
+    body: T.b,
+    code: type === 'ship_created' ? data.code : null,
+    codeLabel: T.codeLabel,
+    extra: type === 'ship_step' ? `• ${stepLabel}` : null,
+    ctaLabel: T.cta,
+    ctaUrl: data.url || null,
+  });
+  return { subject, html };
+}
+
+async function sendResend(cfg, to, subject, html) {
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
+    body: JSON.stringify({
+      from: cfg.fromName ? `${cfg.fromName} <${cfg.fromEmail}>` : cfg.fromEmail,
+      to: [to],
+      subject,
+      html,
+      ...(cfg.replyTo ? { reply_to: cfg.replyTo } : {}),
+    }),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((json && (json.message || (json.error && json.error.message))) || `Resend respondeu ${res.status}`);
+  return json;
+}
+
+async function logEmail(entry) {
+  const log = (await db.readDoc('email_log', [])) || [];
+  log.unshift({ at: new Date().toISOString(), ...entry });
+  await db.writeDoc('email_log', log.slice(0, 400));
+}
+
+// dedup de envios automáticos: doc email_sent { "<tipo>:<id>": ts }
+async function emailAlreadySent(map, key) { return !!map[key]; }
+
+/* ---------- rotas do painel: e-mails ---------- */
+
+app.get('/api/email/config', async (req, res) => {
+  try {
+    const c = await loadEmailCfg();
+    res.json({
+      apiKeySet: !!c.apiKey, fromEmail: c.fromEmail, fromName: c.fromName, replyTo: c.replyTo,
+      lang: c.lang, automations: c.automations, antiDup: !!c.antiDup, ready: emailReady(c),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/email/config', async (req, res) => {
+  try {
+    const c = await loadEmailCfg();
+    const b = req.body || {};
+    if (typeof b.apiKey === 'string' && b.apiKey.trim() !== '') c.apiKey = b.apiKey.trim();
+    if (b.apiKey === '') c.apiKey = '';
+    if (typeof b.fromEmail === 'string') c.fromEmail = b.fromEmail.trim().toLowerCase();
+    if (typeof b.fromName === 'string') c.fromName = b.fromName.trim().slice(0, 60);
+    if (typeof b.replyTo === 'string') c.replyTo = b.replyTo.trim().toLowerCase();
+    if (['pt', 'es', 'en', 'de'].includes(b.lang)) c.lang = b.lang;
+    if (b.automations && typeof b.automations === 'object') {
+      // trava anti-duplicação: só liga automação com a checkbox marcada
+      if (!b.antiDup && Object.values(b.automations).some(Boolean)) {
+        return res.status(400).json({ error: 'Pra ligar automações, confirme a checkbox anti-duplicação (confira o que a Shopify ainda envia).' });
+      }
+      for (const k of Object.keys(EMAILCFG_DEFAULTS.automations)) {
+        if (typeof b.automations[k] === 'boolean') c.automations[k] = b.automations[k];
+      }
+    }
+    if (typeof b.antiDup === 'boolean') c.antiDup = b.antiDup;
+    await saveEmailCfg(c);
+    res.json({ ok: true, ready: emailReady(c) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+const MAIL_SAMPLE = { order: { number: '#1042' }, name: 'Maria', code: 'TK-A1B2C', url: 'https://exemplo.com', stepLabel: '—' };
+
+app.get('/api/email/preview', async (req, res) => {
+  try {
+    const c = await loadEmailCfg();
+    const lang = ['pt', 'es', 'en', 'de'].includes(req.query.lang) ? req.query.lang : c.lang;
+    const L = MAIL_I18N[lang];
+    const data = { ...MAIL_SAMPLE, stepLabel: (SHIP_I18N[lang] || SHIP_I18N.en).steps.intransit };
+    const { subject, html } = buildEmail({ ...c, fromName: c.fromName || 'Sua Loja' }, String(req.query.type || 'payment_approved'), lang, data);
+    res.type('html').send(`<!-- ${mailEsc(subject)} -->` + html);
+  } catch (e) { res.status(400).type('html').send(`<p style="font-family:system-ui;padding:20px">${mailEsc(e.message)}</p>`); }
+});
+
+app.post('/api/email/test', async (req, res) => {
+  try {
+    const c = await loadEmailCfg();
+    if (!emailReady(c)) return res.status(400).json({ error: 'Configure a chave do Resend e o remetente primeiro.' });
+    const { type, lang, to } = req.body || {};
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(to || ''))) return res.status(400).json({ error: 'Informe um e-mail de destino válido.' });
+    const l = ['pt', 'es', 'en', 'de'].includes(lang) ? lang : c.lang;
+    const data = { ...MAIL_SAMPLE, stepLabel: (SHIP_I18N[l] || SHIP_I18N.en).steps.intransit };
+    const { subject, html } = buildEmail(c, String(type || 'payment_approved'), l, data);
+    await sendResend(c, to, `[TESTE] ${subject}`, html);
+    await logEmail({ to, type: `teste:${type}`, subject, status: 'enviado' });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/email/log', async (req, res) => {
+  try { res.json({ log: ((await db.readDoc('email_log', [])) || []).slice(0, 100) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// e-mail de rastreio sob demanda (botão no modal do envio)
+app.post('/api/ship/email', async (req, res) => {
+  try {
+    const c = await loadEmailCfg();
+    if (!emailReady(c)) return res.status(400).json({ error: 'Configure o Resend primeiro (aba E-mails).' });
+    const shipments = (await db.readDoc('shipments', {})) || {};
+    const s = shipments[(req.body || {}).key];
+    if (!s) return res.status(404).json({ error: 'Envio não encontrado.' });
+    if (!s.email) return res.status(400).json({ error: 'Este pedido não tem e-mail de cliente.' });
+    const lang = (await loadShipCfg()).lang || c.lang;
+    const { subject, html } = buildEmail(c, 'ship_created', lang, {
+      order: { number: s.number }, name: (s.customerName || '').split(' ')[0],
+      code: s.code, url: `${appBaseUrl(req)}/t/${s.code}`,
+    });
+    await sendResend(c, s.email, subject, html);
+    s.emailStatus = 'enviado';
+    await db.writeDoc('shipments', shipments);
+    await logEmail({ to: s.email, type: 'ship_created', subject, status: 'enviado', orderKey: s.key });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* ---------- automações: ciclo de e-mails (roda no cron) ---------- */
+
+async function runEmailCycle(baseUrl) {
+  const c = await loadEmailCfg();
+  if (!emailReady(c)) return { skipped: true, reason: 'Resend não configurado.' };
+  const a = c.automations;
+  if (!a.orderCreated && !a.paymentApproved && !a.shipping && !a.delivery) return { skipped: true, reason: 'Automações desligadas.' };
+  let ctx;
+  try { ctx = await ensureFlowConfig(); } catch { return { skipped: true, reason: 'Flow não configurado.' }; }
+  const sent = (await db.readDoc('email_sent', {})) || {};
+  const cutoff = Date.now() - 60 * 86400000;
+  for (const k of Object.keys(sent)) if (sent[k] < cutoff) delete sent[k];
+  let enviados = 0;
+  const erros = [];
+  const shipLang = (await loadShipCfg()).lang || c.lang;
+
+  // pedidos recentes (pagos e pendentes)
+  if ((a.paymentApproved || a.orderCreated) && ctx.pool.length) {
+    try {
+      const from = new Date(Date.now() - 48 * 3600000);
+      const results = await cached(`emailorders:${ctx.pool.map((s) => s.id).join(',')}`, 60000, () => collectOrders(ctx.pool, from, new Date()));
+      for (const o of results.flatMap((r) => r.orders)) {
+        if (enviados >= 25) break;
+        if (!o.email) continue;
+        const tipo = o.status === 'paid' ? (a.paymentApproved ? 'payment_approved' : null)
+          : (o.status === 'pending' ? (a.orderCreated ? 'order_created' : null) : null);
+        if (!tipo) continue;
+        const key = `${tipo}:${o.orderId}`;
+        if (sent[key]) continue;
+        try {
+          const { subject, html } = buildEmail(c, tipo, shipLang, { order: o, name: (o.customerName || '').split(' ')[0] });
+          await sendResend(c, o.email, subject, html);
+          sent[key] = Date.now();
+          enviados++;
+          await logEmail({ to: o.email, type: tipo, subject, status: 'enviado', orderKey: `${o.storeId}:${o.orderId}` });
+        } catch (e) { erros.push(e.message.slice(0, 120)); if (erros.length > 3) break; }
+      }
+    } catch (e) { erros.push(`pedidos: ${e.message}`.slice(0, 120)); }
+  }
+
+  // etapas do rastreio reveladas → e-mail de atualização
+  if (a.shipping || a.delivery) {
+    const shipments = (await db.readDoc('shipments', {})) || {};
+    let mudou = false;
+    for (const s of Object.values(shipments)) {
+      if (enviados >= 25) break;
+      if (!s.email) continue;
+      s.notified = s.notified || [];
+      for (const st of s.steps || []) {
+        if (['confirmed', 'preparing'].includes(st.id)) continue; // cobertos pelo ship_created
+        if (new Date(st.revealAt).getTime() > Date.now()) break;
+        if (s.notified.includes(st.id)) continue;
+        const toggle = st.id === 'shipped' ? a.shipping : a.delivery;
+        if (!toggle) { continue; }
+        try {
+          const stepLabel = (SHIP_I18N[shipLang] || SHIP_I18N.en).steps[st.id] || st.id;
+          const { subject, html } = buildEmail(c, 'ship_step', shipLang, {
+            order: { number: s.number }, name: (s.customerName || '').split(' ')[0],
+            stepLabel, url: `${baseUrl}/t/${s.code}`,
+          });
+          await sendResend(c, s.email, subject, html);
+          s.notified.push(st.id);
+          mudou = true;
+          enviados++;
+          await logEmail({ to: s.email, type: `ship_step:${st.id}`, subject, status: 'enviado', orderKey: s.key });
+        } catch (e) { erros.push(e.message.slice(0, 120)); break; }
+      }
+    }
+    if (mudou) await db.writeDoc('shipments', shipments);
+  }
+
+  await db.writeDoc('email_sent', sent);
+  return { enviados, erros };
+}
+
+/* ---------- CRM de recuperação (checkouts abandonados) ---------- */
+
+const CRM_STAGES = [
+  { k: 's1', horas: 1, tipo: 'abandoned_1', nome: 'Quase lá…' },
+  { k: 's2', horas: 24, tipo: 'abandoned_2', nome: 'Ainda guardamos' },
+  { k: 's3', horas: 48, tipo: 'abandoned_3', nome: 'Estoque limitado' },
+  { k: 's4', horas: 72, tipo: 'abandoned_4', nome: 'Última tentativa' },
+];
+
+async function fetchAbandoned(store, sinceDays = 7) {
+  const params = new URLSearchParams({ limit: '250', created_at_min: new Date(Date.now() - sinceDays * 86400000).toISOString() });
+  const { data } = await shopifyFetch(store, `checkouts.json?${params}`);
+  return (data.checkouts || []).map((ck) => ({
+    id: String(ck.id),
+    storeId: store.id, storeName: store.name,
+    email: ck.email || null,
+    consent: ck.buyer_accepts_marketing !== false,
+    url: ck.abandoned_checkout_url || null,
+    total: parseFloat(ck.total_price) || 0,
+    currency: ck.currency,
+    locale: ck.customer_locale || null,
+    createdAt: ck.created_at,
+    name: ck.billing_address ? [ck.billing_address.first_name, ck.billing_address.last_name].filter(Boolean).join(' ') : null,
+  }));
+}
+
+// elegíveis + estado da sequência (consentimento, janela 7d, sem compra posterior)
+async function crmSnapshot() {
+  const c = await loadEmailCfg();
+  const crm = (await db.readDoc('crm', { sent: {} })) || { sent: {} };
+  crm.sent = crm.sent || {};
+  let ctx;
+  try { ctx = await ensureFlowConfig(); } catch { ctx = { pool: [] }; }
+  let eligible = [];
+  const erros = [];
+  if (ctx.pool.length) {
+    // e-mails que JÁ compraram nos últimos 7 dias (anti-duplicação)
+    let compradores = new Set();
+    let pedidos = [];
+    try {
+      const from = new Date(Date.now() - 7 * 86400000);
+      const results = await cached(`crmorders:${ctx.pool.map((s) => s.id).join(',')}`, 60000, () => collectOrders(ctx.pool, from, new Date()));
+      pedidos = results.flatMap((r) => r.orders);
+      compradores = new Set(pedidos.filter((o) => o.email).map((o) => o.email.toLowerCase()));
+    } catch { /* segue sem o filtro */ }
+    for (const store of ctx.pool) {
+      try {
+        const cks = await cached(`crmck:${store.id}`, 60000, () => fetchAbandoned(store));
+        for (const ck of cks) {
+          if (!ck.email || !ck.consent || !ck.url) continue;
+          if (compradores.has(ck.email.toLowerCase())) continue;
+          eligible.push({ ...ck, stages: crm.sent[ck.id] || {} });
+        }
+      } catch (e) {
+        const falta = /403|forbidden|scope/i.test(String(e.message));
+        erros.push(`${store.name}: ${falta ? 'falta o escopo read_checkouts no app da loja' : String(e.message).slice(0, 100)}`);
+      }
+    }
+    // recuperados: 1º e-mail enviado e compra do mesmo e-mail depois dele
+    var recuperados = [];
+    const sentIds = Object.keys(crm.sent);
+    if (sentIds.length && pedidos.length) {
+      const byEmail = {};
+      for (const o of pedidos) if (o.email) (byEmail[o.email.toLowerCase()] = byEmail[o.email.toLowerCase()] || []).push(o);
+      for (const [ckId, stages] of Object.entries(crm.sent)) {
+        const first = Math.min(...Object.values(stages));
+        const em = (stages._email || '').toLowerCase();
+        for (const o of byEmail[em] || []) {
+          if (o.createdAt.getTime() > first) { recuperados.push({ email: em, number: o.number, total: o.total, currency: o.currency, at: o.createdAt }); break; }
+        }
+      }
+    }
+  }
+  eligible.sort((x, y) => String(y.createdAt).localeCompare(String(x.createdAt)));
+  return { cfg: c, crm, eligible: eligible.slice(0, 200), recuperados: recuperados || [], erros };
+}
+
+app.get('/api/crm', async (req, res) => {
+  try {
+    const { cfg, crm, eligible, recuperados, erros } = await crmSnapshot();
+    const porEtapa = { s1: 0, s2: 0, s3: 0, s4: 0 };
+    let abordados = 0;
+    for (const stages of Object.values(crm.sent)) {
+      let any = false;
+      for (const st of CRM_STAGES) if (stages[st.k]) { porEtapa[st.k]++; any = true; }
+      if (any) abordados++;
+    }
+    res.json({
+      enabled: !!cfg.automations.abandoned,
+      ready: emailReady(cfg),
+      stages: CRM_STAGES.map((s) => ({ ...s, enviados: porEtapa[s.k] })),
+      kpis: {
+        emailsEnviados: Object.values(porEtapa).reduce((a, b) => a + b, 0),
+        abordados,
+        recuperados: recuperados.length,
+        receitaRecuperada: recuperados.reduce((s, r) => s + (r.total || 0), 0),
+      },
+      eligible: eligible.map((e2) => ({
+        id: e2.id, storeName: e2.storeName, email: e2.email, locale: e2.locale,
+        total: e2.total, currency: e2.currency, createdAt: e2.createdAt,
+        etapas: CRM_STAGES.map((s) => !!(e2.stages && e2.stages[s.k])),
+      })),
+      recuperados, erros,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+async function runCrmCycle() {
+  const { cfg, crm, eligible } = await crmSnapshot();
+  if (!cfg.automations.abandoned) return { skipped: true, reason: 'Automação de recuperação desligada.' };
+  if (!emailReady(cfg)) return { skipped: true, reason: 'Resend não configurado.' };
+  let enviados = 0;
+  const erros = [];
+  for (const ck of eligible) {
+    if (enviados >= 20) break;
+    const horas = (Date.now() - new Date(ck.createdAt).getTime()) / 3600000;
+    const stages = crm.sent[ck.id] || {};
+    for (const st of CRM_STAGES) {
+      if (stages[st.k] || horas < st.horas) continue;
+      try {
+        const lang = ['pt', 'es', 'en', 'de'].includes((ck.locale || '').slice(0, 2)) ? ck.locale.slice(0, 2) : cfg.lang;
+        const { subject, html } = buildEmail(cfg, st.tipo, lang, { name: (ck.name || '').split(' ')[0], url: ck.url });
+        await sendResend(cfg, ck.email, subject, html);
+        stages[st.k] = Date.now();
+        stages._email = ck.email;
+        crm.sent[ck.id] = stages;
+        enviados++;
+        await logEmail({ to: ck.email, type: st.tipo, subject, status: 'enviado' });
+      } catch (e) { erros.push(e.message.slice(0, 120)); }
+      break; // uma etapa por ciclo por checkout
+    }
+  }
+  await db.writeDoc('crm', crm);
+  return { enviados, erros };
+}
+
+app.post('/api/crm/run', async (req, res) => {
+  try { res.json({ ok: true, ...(await runCrmCycle()) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* ---------- Caixa de entrada (suporte) ---------- */
+
+app.get('/api/inbox', async (req, res) => {
+  try {
+    const list = (await db.readDoc('inbox', [])) || [];
+    res.json({
+      conversas: list.slice(0, 100),
+      contagem: { todas: list.length, abertas: list.filter((c) => c.status === 'aberto').length, resolvidas: list.filter((c) => c.status === 'resolvido').length },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// novo contato (envia de verdade via Resend) ou registro manual de e-mail recebido
+app.post('/api/inbox/new', async (req, res) => {
+  try {
+    const { email, subject, message, modo } = req.body || {};
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(email || ''))) return res.status(400).json({ error: 'E-mail inválido.' });
+    if (!String(message || '').trim()) return res.status(400).json({ error: 'Escreva a mensagem.' });
+    const recebido = modo === 'recebido';
+    const c = await loadEmailCfg();
+    if (!recebido) {
+      if (!emailReady(c)) return res.status(400).json({ error: 'Configure o Resend primeiro (aba E-mails).' });
+      const html = renderEmailHtml({ fromName: c.fromName || c.fromEmail, greet: '', body: String(message).slice(0, 4000), ctaLabel: null, ctaUrl: null });
+      await sendResend({ ...c, fromEmail: c.replyTo || c.fromEmail }, email, String(subject || 'Contato').slice(0, 150), html);
+      await logEmail({ to: email, type: 'suporte', subject: String(subject || 'Contato'), status: 'enviado' });
+    }
+    const list = (await db.readDoc('inbox', [])) || [];
+    list.unshift({
+      id: crypto.randomUUID(), email: String(email).toLowerCase(), subject: String(subject || '(sem assunto)').slice(0, 150),
+      status: 'aberto', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      msgs: [{ dir: recebido ? 'in' : 'out', at: new Date().toISOString(), text: String(message).slice(0, 4000) }],
+    });
+    await db.writeDoc('inbox', list.slice(0, 300));
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/inbox/reply', async (req, res) => {
+  try {
+    const { id, message, modo } = req.body || {};
+    const list = (await db.readDoc('inbox', [])) || [];
+    const convo = list.find((x) => x.id === id);
+    if (!convo) return res.status(404).json({ error: 'Conversa não encontrada.' });
+    if (!String(message || '').trim()) return res.status(400).json({ error: 'Escreva a mensagem.' });
+    const recebido = modo === 'recebido';
+    if (!recebido) {
+      const c = await loadEmailCfg();
+      if (!emailReady(c)) return res.status(400).json({ error: 'Configure o Resend primeiro (aba E-mails).' });
+      const html = renderEmailHtml({ fromName: c.fromName || c.fromEmail, greet: '', body: String(message).slice(0, 4000), ctaLabel: null, ctaUrl: null });
+      await sendResend({ ...c, fromEmail: c.replyTo || c.fromEmail }, convo.email, `Re: ${convo.subject}`, html);
+      await logEmail({ to: convo.email, type: 'suporte', subject: `Re: ${convo.subject}`, status: 'enviado' });
+    }
+    convo.msgs.push({ dir: recebido ? 'in' : 'out', at: new Date().toISOString(), text: String(message).slice(0, 4000) });
+    convo.updatedAt = new Date().toISOString();
+    if (recebido) convo.status = 'aberto';
+    await db.writeDoc('inbox', list);
+    res.json({ ok: true, convo });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/inbox/status', async (req, res) => {
+  try {
+    const { id, status } = req.body || {};
+    const list = (await db.readDoc('inbox', [])) || [];
+    const convo = list.find((x) => x.id === id);
+    if (!convo) return res.status(404).json({ error: 'Conversa não encontrada.' });
+    convo.status = status === 'resolvido' ? 'resolvido' : 'aberto';
+    convo.updatedAt = new Date().toISOString();
+    await db.writeDoc('inbox', list);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// contexto da compra: pedidos recentes com o e-mail da conversa
+app.get('/api/inbox/context', async (req, res) => {
+  try {
+    const email = String(req.query.email || '').toLowerCase();
+    let pedidos = [];
+    try {
+      const { pool } = await ensureFlowConfig();
+      if (pool.length && email) {
+        const from = new Date(Date.now() - 45 * 86400000);
+        const results = await cached(`inboxctx:${pool.map((s) => s.id).join(',')}`, 60000, () => collectOrders(pool, from, new Date()));
+        pedidos = results.flatMap((r) => r.orders)
+          .filter((o) => (o.email || '').toLowerCase() === email)
+          .map((o) => ({ number: o.number, storeName: o.storeName, total: o.total, currency: o.currency, status: o.status, createdAt: o.createdAt }));
+      }
+    } catch { /* sem flow */ }
+    res.json({ pedidos: pedidos.slice(0, 10) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
