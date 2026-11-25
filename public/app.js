@@ -1572,6 +1572,95 @@ function drModal(title, html) {
 function drModalClose() { $('drModal').hidden = true; }
 
 /* ============================================================
+ * Tour guiado — tutorial passo a passo do painel
+ * ============================================================ */
+
+const TOUR_STEPS = [
+  { title: 'Bem-vindo ao Painel! 👋', text: 'Ele liga sua loja VITRINE (que recebe o tráfego dos anúncios) às lojas de CHECKOUT (que processam o pagamento) — com rotação automática, pixel, rastreio e financeiro. Deixa eu te mostrar cada área em 1 minuto.' },
+  { tab: 'overview', target: '#page-overview .tiles', title: 'Visão geral', text: 'Receita, pedidos, ticket e itens do período. Na segunda fileira: Lucro estimado, Margem, Gastos com anúncios e ROAS — alimentados pelos custos que você configura na aba Financeiro.' },
+  { tab: 'overview', target: '.hero .controls', title: 'Filtros', text: 'Troque o período (Hoje, Ontem, 7 ou 30 dias) e filtre por loja — todos os números do painel acompanham na hora.' },
+  { target: '.tab-btn[data-tab="lojas"]', title: 'Lojas', text: 'Conecte a vitrine e as lojas de checkout (token Custom App ou OAuth com assistente passo a passo). Entrando numa loja você encontra Tema, Tracking (Pixel + CAPI do Meta) e Pedidos.' },
+  { target: '.tab-btn[data-tab="flow"]', title: 'Flow — o coração', text: 'Defina quem é a vitrine, monte o pool de checkouts com rotação automática e limites diários, e mapeie os produtos (AutoMatch por SKU ou par a par).' },
+  { target: '.tab-btn[data-tab="command"]', title: 'Ao vivo', text: 'Globo 3D ⇄ mapa com visitantes e pedidos em tempo real (estilo Shopify Live View), alertas e saúde por loja.' },
+  { target: '.tab-btn[data-tab="ship"]', title: 'Rastreio', text: 'Gere um código de rastreio próprio pra cada pedido pago. O cliente acompanha num portal público com linha do tempo que se revela aos poucos — e você ainda registra o código real da transportadora quando chegar.' },
+  { target: '.tab-btn[data-tab="fin"]', title: 'Financeiro', text: 'Custos de produto e gateway, períodos de gastos com anúncios, payouts do Shopify Payments por loja e a fila de processamento com retry.' },
+  { target: '#manageBtn', title: 'Gerenciar lojas & contas', text: 'Adicione/remova lojas e crie contas separadas — cada login tem um ambiente totalmente isolado, com código de convite pra sua equipe se cadastrar.' },
+  { target: '#tourBtn', title: 'Pronto! 🚀', text: 'Qualquer dúvida, reabra este tutorial aqui. Boas vendas!' },
+];
+
+const tour = { i: 0, el: null };
+
+function tourStart() {
+  tour.i = 0;
+  if (!tour.el) {
+    tour.el = document.createElement('div');
+    tour.el.className = 'tour-overlay';
+    tour.el.innerHTML = '<div class="tour-spot"></div><div class="tour-card"><button class="tour-close" title="Fechar">✕</button><div class="tour-step-n"></div><h3></h3><p></p><div class="tour-foot"><div class="tour-dots"></div><button class="control sm" id="tourPrev">Voltar</button><button class="control sm btn-primary" id="tourNext">Próximo</button></div></div>';
+    document.body.appendChild(tour.el);
+    tour.el.querySelector('.tour-close').addEventListener('click', tourEnd);
+    tour.el.querySelector('#tourPrev').addEventListener('click', () => tourGo(tour.i - 1));
+    tour.el.querySelector('#tourNext').addEventListener('click', () => (tour.i >= TOUR_STEPS.length - 1 ? tourEnd() : tourGo(tour.i + 1)));
+  }
+  tour.el.hidden = false;
+  tourGo(0);
+}
+
+function tourEnd() {
+  if (tour.el) tour.el.hidden = true;
+  try { localStorage.setItem('tourDone', '1'); } catch {}
+}
+
+async function tourGo(i) {
+  tour.i = Math.max(0, Math.min(TOUR_STEPS.length - 1, i));
+  const st = TOUR_STEPS[tour.i];
+  if (st.tab && state.tab !== st.tab) {
+    const b = document.querySelector(`.tab-btn[data-tab="${st.tab}"]`);
+    if (b) b.click();
+    await new Promise((r) => setTimeout(r, 380));
+  }
+  const spot = tour.el.querySelector('.tour-spot');
+  const card = tour.el.querySelector('.tour-card');
+  tour.el.querySelector('.tour-step-n').textContent = `Passo ${tour.i + 1} de ${TOUR_STEPS.length}`;
+  tour.el.querySelector('h3').textContent = st.title;
+  tour.el.querySelector('p').textContent = st.text;
+  tour.el.querySelector('.tour-dots').innerHTML = TOUR_STEPS.map((_, k) => `<i class="${k <= tour.i ? 'on' : ''}"></i>`).join('');
+  tour.el.querySelector('#tourPrev').style.visibility = tour.i === 0 ? 'hidden' : 'visible';
+  tour.el.querySelector('#tourNext').textContent = tour.i >= TOUR_STEPS.length - 1 ? 'Concluir ✓' : 'Próximo';
+
+  const target = st.target ? document.querySelector(st.target) : null;
+  if (target) {
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    await new Promise((r) => setTimeout(r, 280));
+    const r0 = target.getBoundingClientRect();
+    const pad = 8;
+    spot.classList.remove('center');
+    spot.style.left = `${r0.left - pad}px`;
+    spot.style.top = `${r0.top - pad}px`;
+    spot.style.width = `${r0.width + pad * 2}px`;
+    spot.style.height = `${r0.height + pad * 2}px`;
+    // card: embaixo se couber, senão em cima; sempre dentro da tela
+    const ch = card.offsetHeight || 190;
+    const below = r0.bottom + pad + 14 + ch < innerHeight;
+    card.style.top = `${below ? r0.bottom + pad + 14 : Math.max(14, r0.top - pad - 14 - ch)}px`;
+    card.style.left = `${Math.max(14, Math.min(innerWidth - (card.offsetWidth || 350) - 14, r0.left))}px`;
+  } else {
+    spot.classList.add('center');
+    spot.style.left = '50%'; spot.style.top = '50%'; spot.style.width = '0'; spot.style.height = '0';
+    card.style.left = `${Math.max(14, innerWidth / 2 - (card.offsetWidth || 350) / 2)}px`;
+    card.style.top = `${Math.max(40, innerHeight / 2 - (card.offsetHeight || 200) / 2)}px`;
+  }
+}
+
+$('tourBtn').addEventListener('click', tourStart);
+
+// primeira visita: oferece o tour sozinho (só em telas largas, pra não atrapalhar no celular)
+setTimeout(() => {
+  try {
+    if (!localStorage.getItem('tourDone') && innerWidth > 760) tourStart();
+  } catch {}
+}, 1400);
+
+/* ============================================================
  * Financeiro (custos, lucro, payouts, fila) + Rastreio próprio
  * ============================================================ */
 
