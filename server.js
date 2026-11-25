@@ -137,6 +137,9 @@ app.use(async (req, res, next) => {
     const ns = await shopNsLookup(req.query.shop).catch(() => '');
     return db.runAsAccount(ns, next);
   }
+  // portal público de rastreio (/t/<código>): o cliente final acessa sem login;
+  // o handler resolve a conta dona pelo índice global de códigos
+  if (req.path.startsWith('/t/')) return next();
   // arquivos estáticos (css/js/fontes/imagens) são públicos: a própria tela de login
   // precisa deles e não contêm segredo — as APIs continuam exigindo o cookie.
   if (/\.(css|js|mjs|woff2?|ttf|otf|png|jpe?g|svg|gif|ico|webp|map)$/i.test(req.path)) return next();
@@ -458,7 +461,7 @@ async function fetchOrders(store, createdAtMin, createdAtMax) {
     limit: '250',
     created_at_min: createdAtMin.toISOString(),
     created_at_max: createdAtMax.toISOString(),
-    fields: 'id,name,created_at,total_price,currency,cancelled_at,test,financial_status,line_items,shipping_address,customer',
+    fields: 'id,name,created_at,total_price,currency,cancelled_at,test,financial_status,line_items,shipping_address,customer,email',
   });
   let endpoint = `orders.json?${params}`;
   const orders = [];
@@ -470,6 +473,9 @@ async function fetchOrders(store, createdAtMin, createdAtMax) {
       orders.push({
         storeId: store.id,
         storeName: store.name,
+        orderId: o.id,
+        email: o.email || null,
+        customerName: o.customer ? [o.customer.first_name, o.customer.last_name].filter(Boolean).join(' ') : null,
         number: o.name,
         createdAt: new Date(o.created_at),
         total: parseFloat(o.total_price) || 0,
@@ -2027,6 +2033,375 @@ app.post('/api/tracking/capi/run', async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+/* ============================================================
+ * Operação: Custos & Lucro, Payouts, Rastreio próprio e Fila
+ * (espelha o painel Vanelore, adaptado ao nosso multi-contas)
+ * ============================================================ */
+
+/* ---------- Custos & lucro (Dashboard: Lucro, Margem, ROAS) ---------- */
+
+const COSTS_DEFAULTS = {
+  productCost: 0,     // € por unidade vendida
+  gatewayPct: 0,      // % sobre a receita
+  extra1Name: '', extra1Value: 0, // custos fixos por pedido
+  extra2Name: '', extra2Value: 0,
+  adPeriods: [],      // [{ id, start: 'YYYY-MM-DD', end: 'YYYY-MM-DD', amount }] — sem rateio automático
+};
+
+async function loadCosts() {
+  return { ...COSTS_DEFAULTS, ...((await db.readDoc('costs', {})) || {}) };
+}
+
+app.get('/api/costs', async (req, res) => {
+  try { res.json(await loadCosts()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/costs', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) && n >= 0 ? n : 0; };
+    const c = {
+      productCost: num(b.productCost),
+      gatewayPct: Math.min(100, num(b.gatewayPct)),
+      extra1Name: String(b.extra1Name || '').slice(0, 40),
+      extra1Value: num(b.extra1Value),
+      extra2Name: String(b.extra2Name || '').slice(0, 40),
+      extra2Value: num(b.extra2Value),
+      adPeriods: (Array.isArray(b.adPeriods) ? b.adPeriods : []).slice(0, 200).map((p) => ({
+        id: String(p.id || crypto.randomUUID()),
+        start: String(p.start || '').slice(0, 10),
+        end: String(p.end || '').slice(0, 10),
+        amount: num(p.amount),
+      })).filter((p) => /^\d{4}-\d{2}-\d{2}$/.test(p.start) && /^\d{4}-\d{2}-\d{2}$/.test(p.end)),
+      savedAt: new Date().toISOString(),
+    };
+    await db.writeDoc('costs', c);
+    res.json({ ok: true, costs: c });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* ---------- Payouts (Shopify Payments, por loja de checkout) ---------- */
+
+app.get('/api/payouts', async (req, res) => {
+  try {
+    const { pool } = await ensureFlowConfig();
+    if (!pool.length) return res.json({ rows: [], stores: [] });
+    const key = `payouts:${pool.map((s) => s.id).join(',')}`;
+    const data = await cached(key, 60000, async () => {
+      const rows = [];
+      const storesStatus = [];
+      for (const store of pool) {
+        try {
+          const { data: d } = await shopifyFetch(store, 'shopify_payments/payouts.json?limit=25');
+          for (const p of d.payouts || []) {
+            rows.push({
+              storeId: store.id,
+              storeName: store.name,
+              date: p.date,
+              amount: parseFloat(p.amount) || 0,
+              currency: p.currency,
+              status: p.status, // scheduled | in_transit | paid | failed | canceled
+            });
+          }
+          storesStatus.push({ id: store.id, name: store.name, ok: true, payouts: (d.payouts || []).length });
+        } catch (e) {
+          const raw = String(e.message || e);
+          const falta = /403|forbidden|scope|access denied/i.test(raw);
+          storesStatus.push({
+            id: store.id, name: store.name, ok: false,
+            reason: falta ? 'Falta o escopo read_shopify_payments — adicione no app da loja e reautorize.' : raw.slice(0, 140),
+          });
+        }
+      }
+      rows.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+      return { rows: rows.slice(0, 100), stores: storesStatus };
+    });
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* ---------- Rastreio próprio (código TK-XXXXX + portal público) ----------
+ * Igual ao sistema VL da Vanelore: o código é NOSSO, com linha do tempo que se
+ * revela progressivamente ao cliente no portal /t/<código>. O código real da
+ * transportadora é um registro COMPLEMENTAR, separado, por envio.
+ */
+
+const SHIPCFG_DEFAULTS = { prefix: 'TK', lang: 'en' };
+const SHIP_STEPS = [ // offsets em dias a partir da geração do código
+  { id: 'confirmed', off: 0 },
+  { id: 'preparing', off: 1 },
+  { id: 'shipped', off: 3 },
+  { id: 'intransit', off: 6 },
+  { id: 'arrived', off: 10 },
+  { id: 'outfordelivery', off: 12 },
+  { id: 'delivered', off: 14 },
+];
+
+async function loadShipCfg() {
+  return { ...SHIPCFG_DEFAULTS, ...((await db.readDoc('shipcfg', {})) || {}) };
+}
+
+app.get('/api/ship/config', async (req, res) => {
+  try { res.json(await loadShipCfg()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/ship/config', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const cfg = await loadShipCfg();
+    if (typeof b.prefix === 'string') {
+      const p = b.prefix.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
+      if (p) cfg.prefix = p;
+    }
+    if (['pt', 'es', 'en', 'de'].includes(b.lang)) cfg.lang = b.lang;
+    await db.writeDoc('shipcfg', cfg);
+    res.json({ ok: true, ...cfg });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+function genShipCode(prefix) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sem 0/O/1/I — evita confusão no cliente
+  let s = '';
+  for (let i = 0; i < 5; i++) s += chars[crypto.randomInt(chars.length)];
+  return `${prefix}-${s}`;
+}
+
+function shipStatus(shipment, nowMs = Date.now()) {
+  let last = SHIP_STEPS[0].id;
+  for (const st of shipment.steps || []) if (new Date(st.revealAt).getTime() <= nowMs) last = st.id;
+  return last;
+}
+
+// pedidos pagos recentes das lojas de checkout + envios já criados
+app.get('/api/ship/overview', async (req, res) => {
+  try {
+    const cfg = await loadShipCfg();
+    const shipments = (await db.readDoc('shipments', {})) || {};
+    let prepare = [];
+    try {
+      const { pool } = await ensureFlowConfig();
+      if (pool.length) {
+        const from = new Date(Date.now() - 21 * 86400000);
+        const results = await cached(`shipprep:${pool.map((s) => s.id).join(',')}`, 30000, () => collectOrders(pool, from, new Date()));
+        const paid = results.flatMap((r) => r.orders.map((o) => ({ ...o, _domain: r.store.domain })));
+        prepare = paid
+          .filter((o) => (o.status === 'paid' || o.status === 'partially_refunded') && !shipments[`${o.storeId}:${o.orderId}`])
+          .sort((a, b) => b.createdAt - a.createdAt)
+          .map((o) => ({
+            storeId: o.storeId, storeName: o.storeName, orderId: o.orderId, number: o.number,
+            customerName: o.customerName, email: o.email, total: o.total, currency: o.currency,
+            createdAt: o.createdAt, items: o.items, adminUrl: `https://${o._domain}/admin/orders/${o.orderId}`,
+          }));
+      }
+    } catch { /* sem flow configurado ainda */ }
+    const lista = Object.values(shipments).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+      .map((s) => ({ ...s, status: shipStatus(s) }));
+    res.json({ cfg, prepare: prepare.slice(0, 200), shipments: lista.slice(0, 300) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// "Gerar rastreio": cria o código + linha do tempo (e-mail entra quando o Resend estiver ligado)
+app.post('/api/ship/create', async (req, res) => {
+  try {
+    const { storeId, orderId } = req.body || {};
+    if (!storeId || !orderId) return res.status(400).json({ error: 'Pedido inválido.' });
+    const key = `${storeId}:${orderId}`;
+    const shipments = (await db.readDoc('shipments', {})) || {};
+    if (shipments[key]) return res.json({ ok: true, shipment: shipments[key], existed: true });
+
+    const { pool } = await ensureFlowConfig();
+    const store = pool.find((s) => s.id === storeId);
+    if (!store) return res.status(404).json({ error: 'Loja não encontrada no pool.' });
+    const from = new Date(Date.now() - 45 * 86400000);
+    const results = await collectOrders([store], from, new Date());
+    const order = results.flatMap((r) => r.orders).find((o) => String(o.orderId) === String(orderId));
+    if (!order) return res.status(404).json({ error: 'Pedido não encontrado (últimos 45 dias).' });
+
+    const cfg = await loadShipCfg();
+    let code = genShipCode(cfg.prefix);
+    const idx = (await db.readDocGlobal('ship_index', {})) || {};
+    while (idx[code]) code = genShipCode(cfg.prefix); // garante unicidade global
+    const now = Date.now();
+    const shipment = {
+      key, code,
+      storeId, storeName: order.storeName,
+      orderId: String(orderId), number: order.number,
+      customerName: order.customerName || null, email: order.email || null,
+      total: order.total, currency: order.currency,
+      items: order.items,
+      createdAt: new Date(now).toISOString(),
+      steps: SHIP_STEPS.map((st) => ({ id: st.id, revealAt: new Date(now + st.off * 86400000).toISOString() })),
+      carrier: null, carrierIntl: null, carrierLocal: null,
+      emailStatus: 'pendente', // muda quando o Resend estiver configurado
+    };
+    shipments[key] = shipment;
+    await db.writeDoc('shipments', shipments);
+    idx[code] = { ns: db.currentNs(), key };
+    await db.writeDocGlobal('ship_index', idx);
+    res.json({ ok: true, shipment: { ...shipment, status: shipStatus(shipment) } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// registra o código real do fornecedor/transportadora (fluxo complementar)
+app.post('/api/ship/update', async (req, res) => {
+  try {
+    const { key, carrier, carrierIntl, carrierLocal } = req.body || {};
+    const shipments = (await db.readDoc('shipments', {})) || {};
+    const s = shipments[key];
+    if (!s) return res.status(404).json({ error: 'Envio não encontrado.' });
+    if (carrier !== undefined) s.carrier = String(carrier || '').slice(0, 60) || null;
+    if (carrierIntl !== undefined) s.carrierIntl = String(carrierIntl || '').slice(0, 60) || null;
+    if (carrierLocal !== undefined) s.carrierLocal = String(carrierLocal || '').slice(0, 60) || null;
+    await db.writeDoc('shipments', shipments);
+    res.json({ ok: true, shipment: { ...s, status: shipStatus(s) } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* ---------- portal público de rastreio: /t/<código> ---------- */
+
+const SHIP_I18N = {
+  en: {
+    title: 'Track your order', code: 'Tracking code', next: 'Next step', expected: 'expected',
+    carrier: 'Carrier', intl: 'International code', local: 'Local delivery code',
+    items: 'Items', notfound: 'Tracking code not found.', notfoundHint: 'Check the code in your email and try again.',
+    updated: 'Timeline updates automatically as your delivery progresses.',
+    steps: { confirmed: 'Order confirmed', preparing: 'Preparing your package', shipped: 'Shipped', intransit: 'In transit', arrived: 'Arrived in destination country', outfordelivery: 'Out for delivery', delivered: 'Delivered' },
+  },
+  pt: {
+    title: 'Acompanhe seu pedido', code: 'Código de rastreio', next: 'Próxima etapa', expected: 'previsto',
+    carrier: 'Transportadora', intl: 'Código internacional', local: 'Código de entrega local',
+    items: 'Itens', notfound: 'Código de rastreio não encontrado.', notfoundHint: 'Confira o código no seu e-mail e tente de novo.',
+    updated: 'A linha do tempo atualiza sozinha conforme a entrega avança.',
+    steps: { confirmed: 'Pedido confirmado', preparing: 'Preparando seu pacote', shipped: 'Enviado', intransit: 'Em trânsito', arrived: 'Chegou ao país de destino', outfordelivery: 'Saiu para entrega', delivered: 'Entregue' },
+  },
+  es: {
+    title: 'Sigue tu pedido', code: 'Código de seguimiento', next: 'Próximo paso', expected: 'previsto',
+    carrier: 'Transportista', intl: 'Código internacional', local: 'Código de entrega local',
+    items: 'Artículos', notfound: 'Código de seguimiento no encontrado.', notfoundHint: 'Verifica el código en tu correo e inténtalo de nuevo.',
+    updated: 'La línea de tiempo se actualiza automáticamente a medida que avanza tu entrega.',
+    steps: { confirmed: 'Pedido confirmado', preparing: 'Preparando tu paquete', shipped: 'Enviado', intransit: 'En tránsito', arrived: 'Llegó al país de destino', outfordelivery: 'En reparto', delivered: 'Entregado' },
+  },
+  de: {
+    title: 'Sendung verfolgen', code: 'Sendungsnummer', next: 'Nächster Schritt', expected: 'voraussichtlich',
+    carrier: 'Versanddienst', intl: 'Internationale Nummer', local: 'Lokale Zustellnummer',
+    items: 'Artikel', notfound: 'Sendungsnummer nicht gefunden.', notfoundHint: 'Prüfen Sie den Code in Ihrer E-Mail und versuchen Sie es erneut.',
+    updated: 'Die Zeitleiste aktualisiert sich automatisch mit dem Fortschritt Ihrer Lieferung.',
+    steps: { confirmed: 'Bestellung bestätigt', preparing: 'Paket wird vorbereitet', shipped: 'Versendet', intransit: 'Unterwegs', arrived: 'Im Zielland angekommen', outfordelivery: 'In Zustellung', delivered: 'Zugestellt' },
+  },
+};
+
+function shipPortalHtml(t, shipment, lang) {
+  const esc2 = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const base = `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${esc2(t.title)}</title><meta name="robots" content="noindex">
+  <style>
+    :root{color-scheme:light}
+    body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#1a212b}
+    .wrap{max-width:560px;margin:0 auto;padding:32px 18px 60px}
+    .card{background:#fff;border:1px solid #e4e8ec;border-radius:16px;padding:26px 24px;box-shadow:0 2px 10px rgba(20,35,60,.05)}
+    h1{font-size:20px;margin:0 0 4px} .sub{color:#64707d;font-size:13px;margin:0 0 20px}
+    .code{display:inline-block;background:#eef3f8;border:1px dashed #b9c6d4;border-radius:10px;padding:8px 14px;font-family:Consolas,monospace;font-weight:700;letter-spacing:2px;font-size:16px;margin-bottom:22px}
+    .tl{list-style:none;margin:0;padding:0}
+    .tl li{position:relative;padding:0 0 26px 34px}
+    .tl li:last-child{padding-bottom:0}
+    .tl li::before{content:'';position:absolute;left:10px;top:20px;bottom:-2px;width:2px;background:#dfe5ea}
+    .tl li:last-child::before{display:none}
+    .dot{position:absolute;left:2px;top:2px;width:18px;height:18px;border-radius:50%;background:#12b76a;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px}
+    .next .dot{background:#fff;border:2px solid #9fb0c0;width:14px;height:14px}
+    .next .lbl{color:#64707d}
+    .lbl{font-weight:650;font-size:14.5px} .when{font-size:12px;color:#8a95a1;margin-top:2px}
+    .meta{margin-top:24px;border-top:1px solid #edf0f3;padding-top:16px;font-size:13px;color:#4a5562}
+    .meta div{margin-bottom:6px}
+    .foot{font-size:12px;color:#8a95a1;margin-top:18px;text-align:center}
+  </style></head><body><div class="wrap"><div class="card">`;
+  if (!shipment) {
+    return `${base}<h1>${esc2(t.title)}</h1><p class="sub">${esc2(t.notfound)}</p><p style="font-size:13px;color:#64707d">${esc2(t.notfoundHint)}</p></div></div></body></html>`;
+  }
+  const now = Date.now();
+  const done = (shipment.steps || []).filter((s) => new Date(s.revealAt).getTime() <= now);
+  const nextStep = (shipment.steps || []).find((s) => new Date(s.revealAt).getTime() > now);
+  const fmtD = (iso) => new Date(iso).toLocaleDateString(lang === 'en' ? 'en-GB' : lang, { day: 'numeric', month: 'short' });
+  let tl = done.map((s, i) => `<li${i === done.length - 1 && !nextStep ? '' : ''}>
+      <span class="dot">✓</span><div class="lbl">${esc2(t.steps[s.id] || s.id)}</div><div class="when">${fmtD(s.revealAt)}</div></li>`).join('');
+  if (nextStep) {
+    tl += `<li class="next"><span class="dot"></span><div class="lbl">${esc2(t.steps[nextStep.id] || nextStep.id)}</div><div class="when">${esc2(t.expected)} · ${fmtD(nextStep.revealAt)}</div></li>`;
+  }
+  const itens = (shipment.items || []).map((it) => `${it.qty}× ${esc2(it.title)}`).join(' · ');
+  const metaRows = [
+    itens ? `<div><strong>${esc2(t.items)}:</strong> ${itens}</div>` : '',
+    shipment.carrier ? `<div><strong>${esc2(t.carrier)}:</strong> ${esc2(shipment.carrier)}</div>` : '',
+    shipment.carrierIntl ? `<div><strong>${esc2(t.intl)}:</strong> <code>${esc2(shipment.carrierIntl)}</code></div>` : '',
+    shipment.carrierLocal ? `<div><strong>${esc2(t.local)}:</strong> <code>${esc2(shipment.carrierLocal)}</code></div>` : '',
+  ].join('');
+  return `${base}<h1>${esc2(t.title)}</h1><p class="sub">${esc2(t.code)}</p>
+    <div class="code">${esc2(shipment.code)}</div>
+    <ul class="tl">${tl}</ul>
+    ${metaRows ? `<div class="meta">${metaRows}</div>` : ''}
+    </div><p class="foot">${esc2(t.updated)}</p></div></body></html>`;
+}
+
+app.get('/t/:code', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const code = String(req.params.code || '').toUpperCase().trim();
+    const idx = (await db.readDocGlobal('ship_index', {})) || {};
+    const hit = idx[code];
+    let shipment = null;
+    let lang = 'en';
+    if (hit) {
+      await db.runAsAccount(hit.ns || '', async () => {
+        const shipments = (await db.readDoc('shipments', {})) || {};
+        shipment = shipments[hit.key] || null;
+        lang = (await loadShipCfg()).lang || 'en';
+      });
+    }
+    const t = SHIP_I18N[lang] || SHIP_I18N.en;
+    res.type('html').send(shipPortalHtml(t, shipment, lang));
+  } catch {
+    res.type('html').status(500).send('<!doctype html><meta charset="utf-8"><p style="font-family:system-ui;padding:40px">Erro ao carregar o rastreio.</p>');
+  }
+});
+
+/* ---------- Fila de processamento (tarefas + retry) ---------- */
+
+app.get('/api/queue', async (req, res) => {
+  try {
+    const rows = [];
+    const t = await loadTrackingConfig();
+    if (t.lastCapiRun) {
+      const r = t.lastCapiRun;
+      rows.push({
+        task: 'CAPI — Purchase pro Meta', kind: 'capi',
+        status: (r.erros && r.erros.length) ? 'falhou' : 'ok',
+        detail: (r.erros && r.erros[0]) || `${r.enviados || 0} enviado(s), ${r.jaEnviados || 0} já marcados`,
+        at: r.at,
+      });
+    }
+    const pp = await loadPP();
+    const falhas = (pp.executions || []).filter((e) => e.status === 'failed').length;
+    if (pp.enabled) {
+      rows.push({
+        task: 'Pós-compra digital', kind: 'postpurchase',
+        status: falhas ? 'falhou' : 'ok',
+        detail: falhas ? `${falhas} execução(ões) com falha` : `${(pp.executions || []).length} execuções registradas`,
+        at: pp.startAt,
+      });
+    }
+    // os erros de sync de payouts entram pelo próprio /api/payouts (o front junta as duas fontes)
+    res.json({ rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/queue/retry', async (req, res) => {
+  try {
+    const kind = String((req.body || {}).kind || '');
+    if (kind === 'capi') return res.json({ ok: true, result: await runCapiCycle() });
+    if (kind === 'postpurchase') return res.json({ ok: true, result: await runPostPurchaseCycle() });
+    if (kind === 'payouts') { cache.clear(); return res.json({ ok: true, result: 'cache limpo — recarregue os payouts' }); }
+    res.status(400).json({ error: 'Tarefa desconhecida.' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 /* ---------- Mapeamento de produtos: vitrine → loja de checkout ----------
  *
  * O par é escolhido à mão, produto a produto: "quem clicar NESTE produto da
@@ -2152,6 +2527,9 @@ const OAUTH_SCOPES = process.env.SHOPIFY_SCOPES || [
   'read_products',                          // catálogo e mapeamento de produtos
   'read_script_tags', 'write_script_tags',  // injetar/remover o redirect na vitrine
   'read_themes', 'write_themes',            // alternativa: mexer no tema
+  'read_shopify_payments',                  // Payouts (repasses do Shopify Payments)
+  'read_checkouts',                         // CRM: checkouts abandonados das lojas de checkout
+  'read_customers',                         // nome/e-mail do cliente (rastreio e CRM)
   'unauthenticated_read_product_listings',  // Storefront API
   'unauthenticated_read_product_tags',
   'unauthenticated_read_checkouts',

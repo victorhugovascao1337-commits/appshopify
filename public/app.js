@@ -121,6 +121,7 @@ async function loadMetrics() {
     renderStoreTable(m);
     renderProductTable(m);
     renderCommand(m);
+    renderProfit(m);
 
     // mostra o motivo real que a Shopify deu, e não um palpite sobre o token
     const errs = m.byStore.filter((s) => s.error);
@@ -741,7 +742,7 @@ $('addStoreForm').addEventListener('submit', async (e) => {
 
 /* ================= COMMAND CENTER ================= */
 
-const PAGES = { overview: 'page-overview', lojas: 'page-lojas', command: 'page-command', flow: 'page-flow' };
+const PAGES = { overview: 'page-overview', lojas: 'page-lojas', command: 'page-command', ship: 'page-ship', fin: 'page-fin', flow: 'page-flow' };
 
 document.querySelectorAll('.tab-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
@@ -761,6 +762,8 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
     }
     if (state.tab === 'lojas') loadLojas();
     if (state.tab === 'command') lvLoad();
+    if (state.tab === 'ship') shipLoad();
+    if (state.tab === 'fin') finLoad();
   });
 });
 
@@ -1567,6 +1570,338 @@ function drModal(title, html) {
   o.hidden = false;
 }
 function drModalClose() { $('drModal').hidden = true; }
+
+/* ============================================================
+ * Financeiro (custos, lucro, payouts, fila) + Rastreio próprio
+ * ============================================================ */
+
+const finState = { costs: null, payoutErrors: [] };
+const shipState = { data: null };
+
+function rangeWindowStr() {
+  const d0 = new Date(); d0.setHours(0, 0, 0, 0);
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const s = new Date(d0); const e = new Date(d0);
+  if (state.range === 'yesterday') { s.setDate(s.getDate() - 1); e.setDate(e.getDate() - 1); }
+  if (state.range === '7d') s.setDate(s.getDate() - 6);
+  if (state.range === '30d') s.setDate(s.getDate() - 29);
+  return [iso(s), iso(e)];
+}
+
+async function ensureCosts(force) {
+  if (!finState.costs || force) {
+    try { finState.costs = await api('/api/costs'); } catch { finState.costs = null; }
+  }
+  return finState.costs;
+}
+
+function adSpendForRange(c) {
+  const [ini, fim] = rangeWindowStr();
+  // sem rateio automático (igual à spec): soma os períodos que cruzam o filtro
+  return (c.adPeriods || []).filter((p) => p.end >= ini && p.start <= fim).reduce((s, p) => s + (p.amount || 0), 0);
+}
+
+async function renderProfit(m) {
+  try {
+    const c = await ensureCosts();
+    if (!c) return;
+    const receita = m.totals.sales;
+    const pedidos = m.totals.orders;
+    const itens = m.totals.itemsSold;
+    const custoProduto = itens * (c.productCost || 0);
+    const gateway = receita * ((c.gatewayPct || 0) / 100);
+    const extras = pedidos * ((c.extra1Value || 0) + (c.extra2Value || 0));
+    const ads = adSpendForRange(c);
+    const lucro = receita - custoProduto - gateway - extras - ads;
+    const temCfg = (c.productCost || c.gatewayPct || c.extra1Value || c.extra2Value || (c.adPeriods || []).length);
+    $('tProfit').textContent = fmtMoney(lucro);
+    $('tProfit').style.color = lucro < 0 ? 'var(--bad, #e5484d)' : '';
+    $('tProfitSub').textContent = temCfg ? `custos: ${fmtMoney(custoProduto + gateway + extras)}` : 'configure os custos em Financeiro';
+    $('tMargin').textContent = receita > 0 ? `${((lucro / receita) * 100).toFixed(1)}%` : '—';
+    $('tMarginSub').textContent = receita > 0 ? 'lucro ÷ receita' : '';
+    $('tAdSpend').textContent = ads ? fmtMoney(ads) : '—';
+    $('tAdSpendSub').textContent = ads ? 'períodos cadastrados no filtro' : 'cadastre em Financeiro';
+    $('tRoas').textContent = ads > 0 ? `${(receita / ads).toFixed(2)}x` : '—';
+    $('tRoasSub').textContent = ads > 0 ? 'receita ÷ anúncios' : 'precisa de gastos cadastrados';
+  } catch { /* tiles ficam com — */ }
+}
+
+/* ---------- página Financeiro ---------- */
+
+const PAYOUT_LABEL = {
+  paid: ['Pago', 'st-paid'], in_transit: ['Em trânsito', 'st-pending'], scheduled: ['Agendado', 'st-pending'],
+  failed: ['Falhou', 'st-other'], canceled: ['Cancelado', 'st-other'],
+};
+
+async function finLoad() {
+  const root = $('finRoot');
+  root.innerHTML = '<div class="placeholder-empty"><span class="pe-ico">💰</span><div class="pe-title">Carregando…</div></div>';
+  const c = (await ensureCosts(true)) || { adPeriods: [] };
+  root.innerHTML = `
+  <section class="card">
+    <div class="card-head"><h2>Custos</h2><span class="card-sub">${c.savedAt ? 'salvo ' + timeAgo(c.savedAt) : 'Ainda sem configuração guardada.'}</span></div>
+    <p class="hint">Esses valores alimentam o <strong>Lucro estimado, a Margem e o ROAS</strong> da Visão geral.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+      <div><label class="field-label">Custo de produto (por unidade)</label><input id="cProd" class="control" style="width:100%" type="number" step="0.01" min="0" value="${c.productCost || ''}" placeholder="0.00"></div>
+      <div><label class="field-label">Taxa de gateway (%)</label><input id="cGate" class="control" style="width:100%" type="number" step="0.1" min="0" max="100" value="${c.gatewayPct || ''}" placeholder="ex.: 4.5"></div>
+      <div><label class="field-label">Custo extra 1 — nome</label><input id="cE1n" class="control" style="width:100%" value="${esc(c.extra1Name || '')}" placeholder="Ex.: embalagem"></div>
+      <div><label class="field-label">Custo extra 1 — valor por pedido</label><input id="cE1v" class="control" style="width:100%" type="number" step="0.01" min="0" value="${c.extra1Value || ''}" placeholder="0.00"></div>
+      <div><label class="field-label">Custo extra 2 — nome</label><input id="cE2n" class="control" style="width:100%" value="${esc(c.extra2Name || '')}" placeholder="Ex.: taxa app"></div>
+      <div><label class="field-label">Custo extra 2 — valor por pedido</label><input id="cE2v" class="control" style="width:100%" type="number" step="0.01" min="0" value="${c.extra2Value || ''}" placeholder="0.00"></div>
+    </div>
+
+    <div class="card-head" style="margin-top:18px"><h2 style="font-size:15px">Gastos com anúncios</h2><button class="control sm" id="adAdd">+ Adicionar período</button></div>
+    <p class="hint">Registre o total para as <strong>datas exatas</strong> do período que pretende consultar. Não existe rateio automático.</p>
+    <div id="adRows" style="display:grid;gap:8px"></div>
+
+    <div style="display:flex;align-items:center;gap:12px;margin-top:16px">
+      <button class="control btn-primary" id="costsSave">Guardar custos</button>
+      <span class="hint" style="margin:0" id="costsMsg"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Payouts</h2><span class="card-sub">Repasses do Shopify Payments, por loja de checkout</span></div>
+    <div id="payoutStores" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px"></div>
+    <div class="table-scroll"><table class="data-table"><thead><tr><th>Loja</th><th>Data</th><th class="num">Valor</th><th>Estado</th></tr></thead><tbody id="payoutRows"><tr><td colspan="4" class="sc-empty">Carregando…</td></tr></tbody></table></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Fila de processamento</h2><span class="card-sub">Tarefas pendentes ou com falha</span></div>
+    <div class="table-scroll"><table class="data-table"><thead><tr><th>Tarefa</th><th>Estado</th><th>Detalhe</th><th>Ação</th></tr></thead><tbody id="queueRows"><tr><td colspan="4" class="sc-empty">Carregando…</td></tr></tbody></table></div>
+  </section>`;
+
+  // períodos de anúncio
+  const renderAds = () => {
+    $('adRows').innerHTML = (c.adPeriods || []).map((p, i) => `
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input class="control" type="date" data-ad="start" data-i="${i}" value="${p.start}">
+        <span class="hint" style="margin:0">até</span>
+        <input class="control" type="date" data-ad="end" data-i="${i}" value="${p.end}">
+        <input class="control" type="number" step="0.01" min="0" data-ad="amount" data-i="${i}" value="${p.amount || ''}" placeholder="total gasto" style="width:130px">
+        <button class="control sm" data-ad-del="${i}">✕</button>
+      </div>`).join('') || '<span class="hint">Nenhum período cadastrado.</span>';
+    $('adRows').querySelectorAll('[data-ad]').forEach((el) => el.addEventListener('change', () => {
+      const i = Number(el.dataset.i);
+      c.adPeriods[i][el.dataset.ad] = el.dataset.ad === 'amount' ? parseFloat(el.value) || 0 : el.value;
+    }));
+    $('adRows').querySelectorAll('[data-ad-del]').forEach((b) => b.addEventListener('click', () => {
+      c.adPeriods.splice(Number(b.dataset.adDel), 1);
+      renderAds();
+    }));
+  };
+  renderAds();
+  $('adAdd').addEventListener('click', () => {
+    const hoje = rangeWindowStr()[1];
+    c.adPeriods.push({ id: String(Date.now()), start: hoje, end: hoje, amount: 0 });
+    renderAds();
+  });
+
+  $('costsSave').addEventListener('click', async () => {
+    $('costsMsg').textContent = 'Salvando…';
+    try {
+      const body = {
+        productCost: $('cProd').value, gatewayPct: $('cGate').value,
+        extra1Name: $('cE1n').value, extra1Value: $('cE1v').value,
+        extra2Name: $('cE2n').value, extra2Value: $('cE2v').value,
+        adPeriods: c.adPeriods,
+      };
+      const res = await fetch('/api/costs', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+      finState.costs = j.costs;
+      $('costsMsg').textContent = '✓ Salvo — a Visão geral já reflete.';
+      if (state.metrics) renderProfit(state.metrics);
+    } catch (e) { $('costsMsg').textContent = e.message; }
+  });
+
+  // payouts + fila (em paralelo)
+  api('/api/payouts').then((d) => {
+    finState.payoutErrors = (d.stores || []).filter((s) => !s.ok);
+    $('payoutStores').innerHTML = (d.stores || []).map((s) => s.ok
+      ? `<span class="status-badge st-paid">● ${esc(s.name)}</span>`
+      : `<span class="status-badge st-other" title="${esc(s.reason)}">⚠ ${esc(s.name)} — sem acesso</span>`).join('') || '<span class="hint">Nenhuma loja de checkout no Flow.</span>';
+    $('payoutRows').innerHTML = (d.rows || []).map((r) => {
+      const [lbl, cls] = PAYOUT_LABEL[r.status] || [r.status, 'st-other'];
+      return `<tr><td>${esc(r.storeName)}</td><td>${esc(r.date)}</td><td class="num">${(r.amount).toLocaleString('pt-BR', { style: 'currency', currency: r.currency || 'USD' })}</td><td><span class="status-badge ${cls}">${lbl}</span></td></tr>`;
+    }).join('') || '<tr><td colspan="4" class="sc-empty">Nenhum payout encontrado (verifique o escopo read_shopify_payments nas lojas).</td></tr>';
+    renderQueue();
+  }).catch((e) => { $('payoutRows').innerHTML = `<tr><td colspan="4" class="sc-empty">${esc(e.message)}</td></tr>`; renderQueue(); });
+
+  async function renderQueue() {
+    try {
+      const q = await api('/api/queue');
+      const rows = [...(q.rows || [])];
+      for (const s of finState.payoutErrors) {
+        rows.push({ task: `Sync payouts — ${s.name}`, kind: 'payouts', status: 'falhou', detail: s.reason });
+      }
+      $('queueRows').innerHTML = rows.map((r) => `<tr>
+        <td>${esc(r.task)}</td>
+        <td><span class="status-badge ${r.status === 'ok' ? 'st-paid' : 'st-other'}">${r.status === 'ok' ? '● OK' : '● Falhou'}</span></td>
+        <td style="max-width:360px">${esc(r.detail || '—')}</td>
+        <td><button class="control sm" data-retry="${esc(r.kind)}">Tentar novamente</button></td>
+      </tr>`).join('') || '<tr><td colspan="4" class="sc-empty">Nenhuma tarefa na fila. Tudo em dia. ✓</td></tr>';
+      $('queueRows').querySelectorAll('[data-retry]').forEach((b) => b.addEventListener('click', async () => {
+        b.disabled = true; b.textContent = 'Rodando…';
+        try {
+          const res = await fetch('/api/queue/retry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: b.dataset.retry }) });
+          const j = await res.json();
+          if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+          showLojaToast('⟳ Fila', 'Tarefa executada — recarregando a lista.');
+          finLoad();
+        } catch (e) { showLojaToast('⚠ Fila', e.message); b.disabled = false; b.textContent = 'Tentar novamente'; }
+      }));
+    } catch { $('queueRows').innerHTML = '<tr><td colspan="4" class="sc-empty">Erro ao carregar a fila.</td></tr>'; }
+  }
+}
+
+/* ---------- página Rastreio ---------- */
+
+const SHIP_LABEL = {
+  confirmed: ['Pedido confirmado', 'st-pending'], preparing: ['Em preparação', 'st-pending'],
+  shipped: ['Enviado', 'st-paid'], intransit: ['Em trânsito', 'st-paid'], arrived: ['No país de destino', 'st-paid'],
+  outfordelivery: ['Saiu pra entrega', 'st-paid'], delivered: ['Entregue', 'st-paid'],
+};
+const SHIP_LANG_LABEL = { en: 'Inglês', pt: 'Português', es: 'Espanhol', de: 'Alemão' };
+
+async function shipLoad() {
+  const root = $('shipRoot');
+  root.innerHTML = '<div class="placeholder-empty"><span class="pe-ico">🚚</span><div class="pe-title">Carregando…</div><div>Buscando pedidos pagos e envios.</div></div>';
+  let d;
+  try { d = await api('/api/ship/overview'); } catch (e) {
+    root.innerHTML = `<div class="placeholder-empty"><span class="pe-ico">⚠️</span><div class="pe-title">Erro</div><div>${esc(e.message)}</div></div>`;
+    return;
+  }
+  shipState.data = d;
+  const portalBase = `${location.origin}/t/`;
+  root.innerHTML = `
+  <section class="card">
+    <div class="card-head"><h2>Gestão de rastreio</h2><span class="card-sub">Preparação de envios e acompanhamento de expedições</span></div>
+    <p class="hint" style="background:rgba(60,130,246,.08);border:1px solid rgba(60,130,246,.25);border-radius:10px;padding:10px 12px">
+      <strong>O fornecedor trata do envio</strong> — abra um pedido para gerar o código de rastreio próprio e, quando disponível, registre o código internacional e o de entrega local. A transportadora pode ficar por identificar. Registrar um código real não cria movimentos — a linha do tempo do cliente é a do código próprio.
+    </p>
+    <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
+      <div><label class="field-label">Prefixo do código</label><input id="shipPrefix" class="control" style="width:110px;text-transform:uppercase" maxlength="4" value="${esc(d.cfg.prefix)}"></div>
+      <div><label class="field-label">Idioma do portal do cliente</label><select id="shipLang" class="control">${Object.entries(SHIP_LANG_LABEL).map(([v, l]) => `<option value="${v}" ${d.cfg.lang === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <button class="control btn-primary" id="shipCfgSave">Salvar</button>
+      <span class="hint" style="margin:0">Portal: <code>${esc(portalBase)}${esc(d.cfg.prefix)}-XXXXX</code></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Pedidos a preparar</h2><span class="card-sub">${fmtInt(d.prepare.length)} pedido${d.prepare.length === 1 ? '' : 's'} pago${d.prepare.length === 1 ? '' : 's'} sem envio gerado (21 dias)</span></div>
+    <div class="table-scroll"><table class="data-table"><thead><tr><th>Pedido</th><th>Cliente</th><th>Loja</th><th class="num">Valor</th><th>Data</th><th>Ação</th></tr></thead><tbody>
+      ${d.prepare.map((o, i) => `<tr>
+        <td class="mono">${esc(o.number)}</td>
+        <td>${esc(o.customerName || '—')}</td>
+        <td>${esc(o.storeName)}</td>
+        <td class="num">${(o.total).toLocaleString('pt-BR', { style: 'currency', currency: o.currency || 'USD' })}</td>
+        <td>${timeAgo(o.createdAt)}</td>
+        <td><button class="control sm btn-primary" data-prep="${i}">Preparar envio</button></td>
+      </tr>`).join('') || '<tr><td colspan="6" class="sc-empty">Nenhum pedido aguardando envio. ✓</td></tr>'}
+    </tbody></table></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Envios em acompanhamento</h2><span class="card-sub">${fmtInt(d.shipments.length)} envio${d.shipments.length === 1 ? '' : 's'} com código gerado</span></div>
+    <div class="table-scroll"><table class="data-table"><thead><tr><th>Código</th><th>Pedido</th><th>Cliente</th><th>Loja</th><th>Estado</th><th>Ação</th></tr></thead><tbody>
+      ${d.shipments.map((s, i) => {
+        const [lbl, cls] = SHIP_LABEL[s.status] || [s.status, 'st-other'];
+        return `<tr>
+          <td class="mono"><a href="${esc(portalBase)}${esc(s.code)}" target="_blank" style="color:var(--accent)">${esc(s.code)}</a></td>
+          <td class="mono">${esc(s.number)}</td>
+          <td>${esc(s.customerName || '—')}</td>
+          <td>${esc(s.storeName)}</td>
+          <td><span class="status-badge ${cls}">${lbl}</span></td>
+          <td><button class="control sm" data-shipdet="${i}">Detalhes</button></td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="6" class="sc-empty">Nenhum envio gerado ainda.</td></tr>'}
+    </tbody></table></div>
+  </section>`;
+
+  $('shipCfgSave').addEventListener('click', async () => {
+    try {
+      const res = await fetch('/api/ship/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefix: $('shipPrefix').value, lang: $('shipLang').value }) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+      showLojaToast('🚚 Rastreio', `Config salva — códigos novos: ${j.prefix}-XXXXX, portal em ${SHIP_LANG_LABEL[j.lang]}.`);
+    } catch (e) { showLojaToast('⚠ Rastreio', e.message); }
+  });
+
+  root.querySelectorAll('[data-prep]').forEach((b) => b.addEventListener('click', () => shipPrepareModal(d.prepare[Number(b.dataset.prep)])));
+  root.querySelectorAll('[data-shipdet]').forEach((b) => b.addEventListener('click', () => shipDetailModal(d.shipments[Number(b.dataset.shipdet)])));
+}
+
+function shipOrderHtml(o) {
+  return `
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+      <span class="status-badge st-pending">${esc(o.storeName)}</span>
+      <a class="control sm" href="${esc(o.adminUrl || '#')}" target="_blank">Abrir pedido na Shopify ↗</a>
+    </div>
+    <p style="margin:6px 0"><strong>Cliente:</strong> ${esc(o.customerName || '—')}${o.email ? ` · <span class="hint" style="margin:0">${esc(o.email)}</span>` : ''}</p>
+    <p style="margin:6px 0 2px"><strong>Produtos:</strong></p>
+    <ul style="margin:4px 0 14px 18px;padding:0;font-size:13px">${(o.items || []).map((it) => `<li>${it.qty}× ${esc(it.title)}</li>`).join('')}</ul>`;
+}
+
+function shipPrepareModal(o) {
+  if (!o) return;
+  drModal('Detalhes do pedido', `
+    ${shipOrderHtml(o)}
+    <p class="hint">«Gerar rastreio» cria o código com a linha do tempo de entrega que se revela progressivamente ao cliente no portal. O e-mail de acompanhamento entra automático quando o Resend estiver configurado (por enquanto fica <strong>pendente</strong>). O registro do código real do fornecedor continua disponível depois, em cada envio.</p>
+    <button class="control btn-primary" id="shipGen" style="width:100%;justify-content:center;margin-top:8px">🛩 Gerar rastreio</button>
+    <div class="form-status" id="shipGenMsg"></div>`);
+  $('shipGen').addEventListener('click', async () => {
+    $('shipGen').disabled = true;
+    $('shipGenMsg').textContent = 'Gerando código…';
+    try {
+      const res = await fetch('/api/ship/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ storeId: o.storeId, orderId: o.orderId }) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+      drModalClose();
+      showLojaToast('✓ Rastreio gerado', `Código ${j.shipment.code} criado pro pedido ${o.number}.`);
+      shipLoad();
+      shipDetailModal({ ...j.shipment });
+    } catch (e) { $('shipGenMsg').textContent = e.message; $('shipGen').disabled = false; }
+  });
+}
+
+function shipDetailModal(s) {
+  if (!s) return;
+  const portal = `${location.origin}/t/${s.code}`;
+  const [lbl, cls] = SHIP_LABEL[s.status] || [s.status || '—', 'st-other'];
+  drModal('Detalhes do envio', `
+    ${shipOrderHtml({ ...s, adminUrl: null })}
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+      <code style="background:var(--accent-tint);padding:6px 12px;border-radius:8px;font-weight:700;letter-spacing:1px">${esc(s.code)}</code>
+      <span class="status-badge ${cls}">${lbl}</span>
+      <a class="control sm" href="${esc(portal)}" target="_blank">Abrir portal ↗</a>
+      <button class="control sm" id="shipCopyPortal">📋 Copiar link</button>
+    </div>
+    <p class="hint">E-mail de acompanhamento: <strong>${esc(s.emailStatus || 'pendente')}</strong> — envio automático entra com a configuração do Resend.</p>
+    <p style="margin:12px 0 4px"><strong>Código real do fornecedor</strong> <span class="hint" style="margin:0">(complementar — não altera a linha do tempo)</span></p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px">
+      <div><label class="field-label">Transportadora</label><input id="shCarrier" class="control" style="width:100%" value="${esc(s.carrier || '')}" placeholder="pode ficar por identificar"></div>
+      <div><label class="field-label">Código internacional</label><input id="shIntl" class="control" style="width:100%" value="${esc(s.carrierIntl || '')}"></div>
+      <div><label class="field-label">Código de entrega local</label><input id="shLocal" class="control" style="width:100%" value="${esc(s.carrierLocal || '')}"></div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:12px">
+      <button class="control btn-primary" id="shipSaveCodes">Salvar códigos</button>
+      <span class="form-status" id="shipSaveMsg" style="margin:0"></span>
+    </div>`);
+  $('shipCopyPortal').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(portal); showLojaToast('📋 Copiado', 'Link do portal na área de transferência.'); } catch {}
+  });
+  $('shipSaveCodes').addEventListener('click', async () => {
+    $('shipSaveMsg').textContent = 'Salvando…';
+    try {
+      const res = await fetch('/api/ship/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: s.key, carrier: $('shCarrier').value, carrierIntl: $('shIntl').value, carrierLocal: $('shLocal').value }) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+      $('shipSaveMsg').textContent = '✓ Salvo';
+      shipLoad();
+    } catch (e) { $('shipSaveMsg').textContent = e.message; }
+  });
+}
 
 const MATCH_LABEL = {
   exact: ['SKU exato', 'st-paid'],
