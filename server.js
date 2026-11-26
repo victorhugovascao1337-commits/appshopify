@@ -137,9 +137,9 @@ app.use(async (req, res, next) => {
     const ns = await shopNsLookup(req.query.shop).catch(() => '');
     return db.runAsAccount(ns, next);
   }
-  // portal público de rastreio (/t/<código>): o cliente final acessa sem login;
-  // o handler resolve a conta dona pelo índice global de códigos
-  if (req.path.startsWith('/t/')) return next();
+  // portal público de rastreio (/t = busca por código, /t/<código> = linha do tempo):
+  // o cliente final acessa sem login; o handler resolve a conta dona pelo índice global
+  if (req.path === '/t' || req.path.startsWith('/t/')) return next();
   // arquivos estáticos (css/js/fontes/imagens) são públicos: a própria tela de login
   // precisa deles e não contêm segredo — as APIs continuam exigindo o cookie.
   if (/\.(css|js|mjs|woff2?|ttf|otf|png|jpe?g|svg|gif|ico|webp|map)$/i.test(req.path)) return next();
@@ -2133,7 +2133,7 @@ app.get('/api/payouts', async (req, res) => {
  * transportadora é um registro COMPLEMENTAR, separado, por envio.
  */
 
-const SHIPCFG_DEFAULTS = { prefix: 'TK', lang: 'en' };
+const SHIPCFG_DEFAULTS = { prefix: 'TK', lang: 'en', brand: '' };
 const SHIP_STEPS = [ // offsets em dias a partir da geração do código
   { id: 'confirmed', off: 0 },
   { id: 'preparing', off: 1 },
@@ -2161,6 +2161,7 @@ app.put('/api/ship/config', async (req, res) => {
       if (p) cfg.prefix = p;
     }
     if (['pt', 'es', 'en', 'de'].includes(b.lang)) cfg.lang = b.lang;
+    if (typeof b.brand === 'string') cfg.brand = b.brand.trim().slice(0, 40);
     await db.writeDoc('shipcfg', cfg);
     res.json({ ok: true, ...cfg });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2273,6 +2274,17 @@ const SHIP_I18N = {
     items: 'Items', notfound: 'Tracking code not found.', notfoundHint: 'Check the code in your email and try again.',
     updated: 'Timeline updates automatically as your delivery progresses.',
     steps: { confirmed: 'Order confirmed', preparing: 'Preparing your package', shipped: 'Shipped', intransit: 'In transit', arrived: 'Arrived in destination country', outfordelivery: 'Out for delivery', delivered: 'Delivered' },
+    land: {
+      title: 'Track your order', sub: 'Follow your delivery in real time, wherever it is.', btn: 'Track',
+      privT: 'Prefer private access by email', privB: 'Your shipping confirmation email contains a private link that opens your tracking directly, no code needed. That access is yours only — please do not share it.',
+      faqT: 'Frequently asked questions', back: 'Back to store',
+      faq: [
+        ['When do I receive my tracking code?', 'As soon as your shipment is confirmed you receive an email with your code and a private tracking link — usually within 1–3 business days after payment.'],
+        ['The tracking is not updating — what should I do?', 'The timeline updates automatically as your delivery progresses. A few days without news between steps is normal for international shipping.'],
+        ['How long does delivery take?', 'The expected date of the next step is shown right on your tracking page. Most deliveries are completed within about 2 weeks.'],
+        ['Can I change the delivery address?', 'Reply to your order confirmation email as soon as possible. If the package has not left yet, our team will update it for you.'],
+      ],
+    },
   },
   pt: {
     title: 'Acompanhe seu pedido', code: 'Código de rastreio', next: 'Próxima etapa', expected: 'previsto',
@@ -2280,6 +2292,17 @@ const SHIP_I18N = {
     items: 'Itens', notfound: 'Código de rastreio não encontrado.', notfoundHint: 'Confira o código no seu e-mail e tente de novo.',
     updated: 'A linha do tempo atualiza sozinha conforme a entrega avança.',
     steps: { confirmed: 'Pedido confirmado', preparing: 'Preparando seu pacote', shipped: 'Enviado', intransit: 'Em trânsito', arrived: 'Chegou ao país de destino', outfordelivery: 'Saiu para entrega', delivered: 'Entregue' },
+    land: {
+      title: 'Rastreie seu pedido', sub: 'Acompanhe sua entrega em tempo real, onde estiver.', btn: 'Rastrear',
+      privT: 'Preferir acesso privado por e-mail', privB: 'No e-mail de confirmação de envio você recebe um link privado que abre seu rastreio direto, sem digitar código. Esse acesso é só seu — não compartilhe.',
+      faqT: 'Perguntas frequentes', back: 'Voltar à loja',
+      faq: [
+        ['Quando recebo meu código de rastreio?', 'Assim que o envio é confirmado, você recebe um e-mail com o código e um link privado de acompanhamento — normalmente em 1 a 3 dias úteis após o pagamento.'],
+        ['O rastreio não atualiza — o que faço?', 'A linha do tempo atualiza sozinha conforme a entrega avança. Ficar alguns dias sem novidade entre etapas é normal em envios internacionais.'],
+        ['Quanto tempo demora a entrega?', 'A data prevista da próxima etapa aparece na própria página de rastreio. Na maioria dos casos a entrega é concluída em cerca de 2 semanas.'],
+        ['Posso alterar o endereço de entrega?', 'Responda o e-mail de confirmação do pedido o quanto antes. Se o pacote ainda não saiu, nossa equipe altera pra você.'],
+      ],
+    },
   },
   es: {
     title: 'Sigue tu pedido', code: 'Código de seguimiento', next: 'Próximo paso', expected: 'previsto',
@@ -2287,6 +2310,17 @@ const SHIP_I18N = {
     items: 'Artículos', notfound: 'Código de seguimiento no encontrado.', notfoundHint: 'Verifica el código en tu correo e inténtalo de nuevo.',
     updated: 'La línea de tiempo se actualiza automáticamente a medida que avanza tu entrega.',
     steps: { confirmed: 'Pedido confirmado', preparing: 'Preparando tu paquete', shipped: 'Enviado', intransit: 'En tránsito', arrived: 'Llegó al país de destino', outfordelivery: 'En reparto', delivered: 'Entregado' },
+    land: {
+      title: 'Sigue tu pedido', sub: 'Sigue tu entrega en tiempo real, estés donde estés.', btn: 'Rastrear',
+      privT: 'Prefiero el acceso privado por correo', privB: 'En el correo de confirmación de envío recibes un enlace privado que abre tu seguimiento directamente, sin escribir el código. Ese acceso es solo tuyo — no lo compartas.',
+      faqT: 'Preguntas frecuentes', back: 'Volver a la tienda',
+      faq: [
+        ['¿Cuándo recibo mi código de seguimiento?', 'En cuanto se confirma el envío recibes un correo con tu código y un enlace privado de seguimiento — normalmente entre 1 y 3 días hábiles después del pago.'],
+        ['El seguimiento no se actualiza, ¿qué hago?', 'La línea de tiempo se actualiza automáticamente a medida que avanza tu entrega. Pasar unos días sin novedades entre etapas es normal en envíos internacionales.'],
+        ['¿Cuánto tarda la entrega?', 'La fecha prevista del próximo paso aparece en tu página de seguimiento. La mayoría de las entregas se completan en unas 2 semanas.'],
+        ['¿Puedo cambiar la dirección de entrega?', 'Responde al correo de confirmación del pedido lo antes posible. Si el paquete aún no salió, nuestro equipo la cambia por ti.'],
+      ],
+    },
   },
   de: {
     title: 'Sendung verfolgen', code: 'Sendungsnummer', next: 'Nächster Schritt', expected: 'voraussichtlich',
@@ -2294,58 +2328,170 @@ const SHIP_I18N = {
     items: 'Artikel', notfound: 'Sendungsnummer nicht gefunden.', notfoundHint: 'Prüfen Sie den Code in Ihrer E-Mail und versuchen Sie es erneut.',
     updated: 'Die Zeitleiste aktualisiert sich automatisch mit dem Fortschritt Ihrer Lieferung.',
     steps: { confirmed: 'Bestellung bestätigt', preparing: 'Paket wird vorbereitet', shipped: 'Versendet', intransit: 'Unterwegs', arrived: 'Im Zielland angekommen', outfordelivery: 'In Zustellung', delivered: 'Zugestellt' },
+    land: {
+      title: 'Sendung verfolgen', sub: 'Verfolgen Sie Ihre Lieferung in Echtzeit, wo immer sie ist.', btn: 'Verfolgen',
+      privT: 'Privaten Zugang per E-Mail bevorzugen', privB: 'In der Versandbestätigung erhalten Sie einen privaten Link, der Ihre Sendungsverfolgung direkt öffnet — ganz ohne Code. Dieser Zugang gehört nur Ihnen, bitte nicht teilen.',
+      faqT: 'Häufige Fragen', back: 'Zurück zum Shop',
+      faq: [
+        ['Wann erhalte ich meine Sendungsnummer?', 'Sobald der Versand bestätigt ist, erhalten Sie eine E-Mail mit Ihrem Code und einem privaten Link — in der Regel 1–3 Werktage nach der Zahlung.'],
+        ['Das Tracking aktualisiert sich nicht — was tun?', 'Die Zeitleiste aktualisiert sich automatisch mit dem Fortschritt. Einige Tage ohne Neuigkeiten zwischen den Schritten sind bei internationalen Sendungen normal.'],
+        ['Wie lange dauert die Lieferung?', 'Das voraussichtliche Datum des nächsten Schritts sehen Sie direkt auf Ihrer Tracking-Seite. Die meisten Lieferungen sind in etwa 2 Wochen abgeschlossen.'],
+        ['Kann ich die Lieferadresse ändern?', 'Antworten Sie so schnell wie möglich auf Ihre Bestellbestätigung. Ist das Paket noch nicht unterwegs, ändert unser Team die Adresse für Sie.'],
+      ],
+    },
   },
 };
 
-function shipPortalHtml(t, shipment, lang) {
-  const esc2 = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const base = `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>${esc2(t.title)}</title><meta name="robots" content="noindex">
+const shipEsc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// tema escuro premium compartilhado pela busca (/t) e pelo portal (/t/<código>)
+function shipShellHtml({ lang, title, brand, backUrl, backLabel, langSwitch, body }) {
+  const e = shipEsc;
+  return `<!doctype html><html lang="${e(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${e(title)}</title><meta name="robots" content="noindex">
   <style>
-    :root{color-scheme:light}
-    body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#1a212b}
-    .wrap{max-width:560px;margin:0 auto;padding:32px 18px 60px}
-    .card{background:#fff;border:1px solid #e4e8ec;border-radius:16px;padding:26px 24px;box-shadow:0 2px 10px rgba(20,35,60,.05)}
-    h1{font-size:20px;margin:0 0 4px} .sub{color:#64707d;font-size:13px;margin:0 0 20px}
-    .code{display:inline-block;background:#eef3f8;border:1px dashed #b9c6d4;border-radius:10px;padding:8px 14px;font-family:Consolas,monospace;font-weight:700;letter-spacing:2px;font-size:16px;margin-bottom:22px}
+    :root{color-scheme:dark}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;background:#0d0b08;color:#e9e2d4;min-height:100vh}
+    body::before{content:'';position:fixed;inset:0;background:radial-gradient(700px 360px at 50% -80px,rgba(200,169,100,.10),transparent 70%);pointer-events:none}
+    a{color:#c8a964;text-decoration:none}
+    .top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 22px;border-bottom:1px solid rgba(200,169,100,.16);position:relative}
+    .brand{font-family:Georgia,'Times New Roman',serif;font-size:19px;letter-spacing:.14em;text-transform:uppercase;color:#f2ebdc;white-space:nowrap}
+    .topr{display:flex;align-items:center;gap:14px;font-size:12.5px}
+    .langs{display:flex;gap:2px;border:1px solid rgba(200,169,100,.25);border-radius:999px;padding:3px}
+    .langs a{padding:3px 9px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:.06em;color:#b7a98b}
+    .langs a.on{background:rgba(200,169,100,.18);color:#ecdfc0}
+    .wrap{max-width:640px;margin:0 auto;padding:40px 20px 70px;position:relative}
+    h1{font-family:Georgia,'Times New Roman',serif;font-weight:400;color:#ecdcae;margin:0}
+    .foot{text-align:center;font-size:11.5px;color:#6d644f;padding:26px 20px 34px}
+  </style></head><body>
+  <div class="top">
+    <div class="brand">${e(brand || title)}</div>
+    <div class="topr">${langSwitch || ''}${backUrl ? `<a href="${e(backUrl)}">${e(backLabel || '')} →</a>` : ''}</div>
+  </div>
+  <div class="wrap">${body}</div>
+  <div class="foot">${e(brand || '')}</div>
+  </body></html>`;
+}
+
+// página pública de busca: o cliente digita o código e cai no portal
+function shipLandingHtml(t, { brand, prefix, lang, shop }) {
+  const e = shipEsc;
+  const L = t.land;
+  const qs = (l) => `/t?${new URLSearchParams({ ...(shop ? { shop } : {}), lang: l })}`;
+  const langSwitch = `<div class="langs">${['pt', 'en', 'es', 'de'].map((l) => `<a class="${l === lang ? 'on' : ''}" href="${e(qs(l))}">${l.toUpperCase()}</a>`).join('')}</div>`;
+  const body = `
+  <style>
+    .hero{text-align:center;padding:22px 0 8px}
+    .ic{width:76px;height:76px;border-radius:50%;border:1px solid rgba(200,169,100,.45);display:inline-flex;align-items:center;justify-content:center;margin-bottom:22px;background:rgba(200,169,100,.06)}
+    .hero h1{font-size:clamp(30px,6vw,42px)}
+    .hero p{color:#b3a583;font-size:15px;margin:12px auto 0;max-width:420px;line-height:1.6}
+    form{display:flex;gap:10px;margin:30px 0 18px}
+    input{flex:1;background:rgba(255,255,255,.04);border:1px solid rgba(200,169,100,.30);border-radius:10px;padding:14px 16px 14px 42px;font-family:Consolas,'Courier New',monospace;font-size:15px;letter-spacing:2px;color:#f2ebdc;outline:none;min-width:0}
+    input::placeholder{color:#6d644f;letter-spacing:2px}
+    input:focus{border-color:rgba(200,169,100,.65);box-shadow:0 0 0 3px rgba(200,169,100,.12)}
+    .searchbox{position:relative;flex:1;display:flex}
+    .searchbox svg{position:absolute;left:14px;top:50%;transform:translateY(-50%);opacity:.55}
+    button{background:linear-gradient(160deg,#b4934f,#8f7134);border:1px solid rgba(255,230,170,.35);color:#14100a;font-weight:700;font-size:14px;letter-spacing:.03em;padding:14px 26px;border-radius:10px;cursor:pointer}
+    button:hover{filter:brightness(1.1)}
+    .priv{border:1px dashed rgba(200,169,100,.35);border-radius:10px;margin:0 0 34px}
+    .priv summary{cursor:pointer;list-style:none;padding:13px 16px;color:#cfae6b;font-size:13.5px;font-weight:600}
+    .priv summary::before{content:'▸ ';font-size:11px}
+    .priv[open] summary::before{content:'▾ '}
+    .priv p{margin:0;padding:0 16px 14px;color:#b3a583;font-size:13.5px;line-height:1.7}
+    .faq{border-top:1px solid rgba(200,169,100,.18);padding-top:26px}
+    .faq h2{font-family:Georgia,serif;font-weight:400;font-size:21px;color:#eee3c8;margin:0 0 6px}
+    .faq details{border-bottom:1px solid rgba(255,255,255,.07)}
+    .faq summary{cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:15px 2px;font-size:14.5px;font-weight:600;color:#e9e2d4}
+    .faq summary::after{content:'▾';color:#c8a964;font-size:12px;transition:transform .15s}
+    .faq details[open] summary::after{transform:rotate(180deg)}
+    .faq p{margin:0;padding:0 2px 16px;color:#b3a583;font-size:13.5px;line-height:1.75}
+  </style>
+  <div class="hero">
+    <div class="ic"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#c8a964" stroke-width="1.4"><path d="M21 8.5v7a1 1 0 0 1-.55.9l-8 4.2a1 1 0 0 1-.9 0l-8-4.2a1 1 0 0 1-.55-.9v-7a1 1 0 0 1 .55-.9l8-4.2a1 1 0 0 1 .9 0l8 4.2a1 1 0 0 1 .55.9Z"/><path d="M3.3 7.6 12 12l8.7-4.4M12 12v9"/></svg></div>
+    <h1>${e(L.title)}</h1>
+    <p>${e(L.sub)}</p>
+  </div>
+  <form onsubmit="var v=this.code.value.toUpperCase().replace(/[^A-Z0-9-]/g,'');if(v){location.href='/t/'+encodeURIComponent(v)}return false">
+    <span class="searchbox">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8a964" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input name="code" placeholder="${e(prefix || 'TK')}-XXXXX" autocomplete="off" autocapitalize="characters" spellcheck="false">
+    </span>
+    <button type="submit">${e(L.btn)}</button>
+  </form>
+  <details class="priv"><summary>${e(L.privT)}</summary><p>${e(L.privB)}</p></details>
+  <div class="faq">
+    <h2>${e(L.faqT)}</h2>
+    ${L.faq.map(([q, a]) => `<details><summary>${e(q)}</summary><p>${e(a)}</p></details>`).join('')}
+  </div>`;
+  return shipShellHtml({ lang, title: L.title, brand, backUrl: shop ? `https://${shop}` : null, backLabel: L.back, langSwitch, body });
+}
+
+function shipPortalHtml(t, shipment, lang, brand) {
+  const e = shipEsc;
+  const back = `<a href="/t">← ${e(t.land ? t.land.title : '')}</a>`;
+  const cardOpen = `
+  <style>
+    .card{background:rgba(255,255,255,.03);border:1px solid rgba(200,169,100,.22);border-radius:16px;padding:28px 26px;margin-top:10px}
+    .card h1{font-size:24px;margin:0 0 4px}
+    .sub{color:#b3a583;font-size:13px;margin:0 0 20px}
+    .code{display:inline-block;border:1px solid rgba(200,169,100,.45);border-radius:10px;padding:9px 16px;font-family:Consolas,monospace;font-weight:700;letter-spacing:3px;font-size:16px;color:#ecdcae;margin-bottom:24px}
     .tl{list-style:none;margin:0;padding:0}
-    .tl li{position:relative;padding:0 0 26px 34px}
+    .tl li{position:relative;padding:0 0 26px 36px}
     .tl li:last-child{padding-bottom:0}
-    .tl li::before{content:'';position:absolute;left:10px;top:20px;bottom:-2px;width:2px;background:#dfe5ea}
+    .tl li::before{content:'';position:absolute;left:10px;top:22px;bottom:-2px;width:1px;background:rgba(200,169,100,.28)}
     .tl li:last-child::before{display:none}
-    .dot{position:absolute;left:2px;top:2px;width:18px;height:18px;border-radius:50%;background:#12b76a;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px}
-    .next .dot{background:#fff;border:2px solid #9fb0c0;width:14px;height:14px}
-    .next .lbl{color:#64707d}
-    .lbl{font-weight:650;font-size:14.5px} .when{font-size:12px;color:#8a95a1;margin-top:2px}
-    .meta{margin-top:24px;border-top:1px solid #edf0f3;padding-top:16px;font-size:13px;color:#4a5562}
-    .meta div{margin-bottom:6px}
-    .foot{font-size:12px;color:#8a95a1;margin-top:18px;text-align:center}
-  </style></head><body><div class="wrap"><div class="card">`;
+    .dot{position:absolute;left:2px;top:2px;width:18px;height:18px;border-radius:50%;background:#c8a964;display:flex;align-items:center;justify-content:center;color:#14100a;font-size:11px;font-weight:800}
+    .next .dot{background:transparent;border:1px solid rgba(200,169,100,.5);width:16px;height:16px}
+    .next .lbl{color:#b3a583}
+    .lbl{font-weight:650;font-size:14.5px;color:#e9e2d4} .when{font-size:12px;color:#8d8169;margin-top:2px}
+    .meta{margin-top:24px;border-top:1px solid rgba(200,169,100,.18);padding-top:16px;font-size:13px;color:#c5b89a;line-height:1.8}
+    .meta strong{color:#e9e2d4}
+    .meta code{color:#ecdcae}
+    .note{font-size:12px;color:#8d8169;margin-top:16px;text-align:center}
+  </style><div class="card">`;
   if (!shipment) {
-    return `${base}<h1>${esc2(t.title)}</h1><p class="sub">${esc2(t.notfound)}</p><p style="font-size:13px;color:#64707d">${esc2(t.notfoundHint)}</p></div></div></body></html>`;
+    const body = `${cardOpen}<h1>${e(t.title)}</h1><p class="sub">${e(t.notfound)}</p><p style="font-size:13px;color:#b3a583;margin:0">${e(t.notfoundHint)}</p></div><p class="note">${back}</p>`;
+    return shipShellHtml({ lang, title: t.title, brand, body });
   }
   const now = Date.now();
   const done = (shipment.steps || []).filter((s) => new Date(s.revealAt).getTime() <= now);
   const nextStep = (shipment.steps || []).find((s) => new Date(s.revealAt).getTime() > now);
   const fmtD = (iso) => new Date(iso).toLocaleDateString(lang === 'en' ? 'en-GB' : lang, { day: 'numeric', month: 'short' });
-  let tl = done.map((s, i) => `<li${i === done.length - 1 && !nextStep ? '' : ''}>
-      <span class="dot">✓</span><div class="lbl">${esc2(t.steps[s.id] || s.id)}</div><div class="when">${fmtD(s.revealAt)}</div></li>`).join('');
+  let tl = done.map((s) => `<li><span class="dot">✓</span><div class="lbl">${e(t.steps[s.id] || s.id)}</div><div class="when">${fmtD(s.revealAt)}</div></li>`).join('');
   if (nextStep) {
-    tl += `<li class="next"><span class="dot"></span><div class="lbl">${esc2(t.steps[nextStep.id] || nextStep.id)}</div><div class="when">${esc2(t.expected)} · ${fmtD(nextStep.revealAt)}</div></li>`;
+    tl += `<li class="next"><span class="dot"></span><div class="lbl">${e(t.steps[nextStep.id] || nextStep.id)}</div><div class="when">${e(t.expected)} · ${fmtD(nextStep.revealAt)}</div></li>`;
   }
-  const itens = (shipment.items || []).map((it) => `${it.qty}× ${esc2(it.title)}`).join(' · ');
+  const itens = (shipment.items || []).map((it) => `${it.qty}× ${e(it.title)}`).join(' · ');
   const metaRows = [
-    itens ? `<div><strong>${esc2(t.items)}:</strong> ${itens}</div>` : '',
-    shipment.carrier ? `<div><strong>${esc2(t.carrier)}:</strong> ${esc2(shipment.carrier)}</div>` : '',
-    shipment.carrierIntl ? `<div><strong>${esc2(t.intl)}:</strong> <code>${esc2(shipment.carrierIntl)}</code></div>` : '',
-    shipment.carrierLocal ? `<div><strong>${esc2(t.local)}:</strong> <code>${esc2(shipment.carrierLocal)}</code></div>` : '',
+    itens ? `<div><strong>${e(t.items)}:</strong> ${itens}</div>` : '',
+    shipment.carrier ? `<div><strong>${e(t.carrier)}:</strong> ${e(shipment.carrier)}</div>` : '',
+    shipment.carrierIntl ? `<div><strong>${e(t.intl)}:</strong> <code>${e(shipment.carrierIntl)}</code></div>` : '',
+    shipment.carrierLocal ? `<div><strong>${e(t.local)}:</strong> <code>${e(shipment.carrierLocal)}</code></div>` : '',
   ].join('');
-  return `${base}<h1>${esc2(t.title)}</h1><p class="sub">${esc2(t.code)}</p>
-    <div class="code">${esc2(shipment.code)}</div>
+  const body = `${cardOpen}<h1>${e(t.title)}</h1><p class="sub">${e(t.code)}</p>
+    <div class="code">${e(shipment.code)}</div>
     <ul class="tl">${tl}</ul>
     ${metaRows ? `<div class="meta">${metaRows}</div>` : ''}
-    </div><p class="foot">${esc2(t.updated)}</p></div></body></html>`;
+    </div><p class="note">${e(t.updated)}</p>`;
+  return shipShellHtml({ lang, title: t.title, brand, body });
 }
+
+// página de busca de rastreio: /t (opcional ?shop=<domínio> pra marca/idioma da conta)
+app.get('/t', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const shop = String(req.query.shop || '').trim().toLowerCase().replace(/[^a-z0-9.-]/g, '').slice(0, 80) || null;
+    const ns = shop ? await shopNsLookup(shop).catch(() => '') : '';
+    let cfg = SHIPCFG_DEFAULTS;
+    await db.runAsAccount(ns || '', async () => { cfg = await loadShipCfg(); });
+    const lang = ['pt', 'es', 'en', 'de'].includes(req.query.lang) ? req.query.lang : (cfg.lang || 'en');
+    const t = SHIP_I18N[lang] || SHIP_I18N.en;
+    res.type('html').send(shipLandingHtml(t, { brand: cfg.brand || '', prefix: cfg.prefix || 'TK', lang, shop }));
+  } catch {
+    res.type('html').status(500).send('<!doctype html><meta charset="utf-8"><p style="font-family:system-ui;padding:40px">Erro ao carregar a página de rastreio.</p>');
+  }
+});
 
 app.get('/t/:code', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
@@ -2355,15 +2501,18 @@ app.get('/t/:code', async (req, res) => {
     const hit = idx[code];
     let shipment = null;
     let lang = 'en';
+    let brand = '';
     if (hit) {
       await db.runAsAccount(hit.ns || '', async () => {
         const shipments = (await db.readDoc('shipments', {})) || {};
         shipment = shipments[hit.key] || null;
-        lang = (await loadShipCfg()).lang || 'en';
+        const cfg = await loadShipCfg();
+        lang = cfg.lang || 'en';
+        brand = cfg.brand || '';
       });
     }
     const t = SHIP_I18N[lang] || SHIP_I18N.en;
-    res.type('html').send(shipPortalHtml(t, shipment, lang));
+    res.type('html').send(shipPortalHtml(t, shipment, lang, brand));
   } catch {
     res.type('html').status(500).send('<!doctype html><meta charset="utf-8"><p style="font-family:system-ui;padding:40px">Erro ao carregar o rastreio.</p>');
   }

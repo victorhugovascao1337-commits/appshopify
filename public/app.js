@@ -2201,10 +2201,14 @@ async function shipLoad() {
     </p>
     <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
       <div><label class="field-label">Prefixo do código</label><input id="shipPrefix" class="control" style="width:110px;text-transform:uppercase" maxlength="4" value="${esc(d.cfg.prefix)}"></div>
+      <div><label class="field-label">Nome da marca (página de rastreio)</label><input id="shipBrand" class="control" style="width:200px" maxlength="40" placeholder="ex.: Belluty" value="${esc(d.cfg.brand || '')}"></div>
       <div><label class="field-label">Idioma do portal do cliente</label><select id="shipLang" class="control">${Object.entries(SHIP_LANG_LABEL).map(([v, l]) => `<option value="${v}" ${d.cfg.lang === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <button class="control btn-primary" id="shipCfgSave">Salvar</button>
-      <span class="hint" style="margin:0">Portal: <code>${esc(portalBase)}${esc(d.cfg.prefix)}-XXXXX</code></span>
     </div>
+    <p class="hint" style="margin-top:10px">
+      Página de busca pro cliente: <a href="${esc(location.origin)}/t" target="_blank" style="color:var(--accent)"><code>${esc(location.origin)}/t</code></a>
+      — coloque esse link no menu/rodapé da loja ("Rastrear pedido"). Link direto de cada envio: <code>${esc(portalBase)}${esc(d.cfg.prefix)}-XXXXX</code>
+    </p>
   </section>
 
   <section class="card">
@@ -2240,7 +2244,7 @@ async function shipLoad() {
 
   $('shipCfgSave').addEventListener('click', async () => {
     try {
-      const res = await fetch('/api/ship/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefix: $('shipPrefix').value, lang: $('shipLang').value }) });
+      const res = await fetch('/api/ship/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefix: $('shipPrefix').value, lang: $('shipLang').value, brand: $('shipBrand').value }) });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
       showLojaToast('🚚 Rastreio', `Config salva — códigos novos: ${j.prefix}-XXXXX, portal em ${SHIP_LANG_LABEL[j.lang]}.`);
