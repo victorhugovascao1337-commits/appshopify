@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Dashboard multi-loja Shopify.
  * Lê pedidos via Admin API de cada loja cadastrada e agrega métricas.
  * Sem lojas cadastradas, o painel fica vazio até você conectar uma loja.
@@ -481,6 +481,7 @@ async function fetchOrders(store, createdAtMin, createdAtMax) {
         total: parseFloat(o.total_price) || 0,
         currency: o.currency,
         status: o.financial_status || 'paid',
+        addr: o.shipping_address ? [o.shipping_address.address1, o.shipping_address.address2, o.shipping_address.city, o.shipping_address.zip, o.shipping_address.country_code].filter(Boolean).join(', ') : null,
         city: o.shipping_address ? o.shipping_address.city : null,
         country: o.shipping_address ? o.shipping_address.country : null,
         countryCode: o.shipping_address ? o.shipping_address.country_code : null,
@@ -2236,7 +2237,7 @@ app.post('/api/ship/create', async (req, res) => {
       orderId: String(orderId), number: order.number,
       customerName: order.customerName || null, email: order.email || null,
       total: order.total, currency: order.currency,
-      items: order.items,
+      items: order.items, addr: order.addr || null,
       createdAt: new Date(now).toISOString(),
       steps: SHIP_STEPS.map((st) => ({ id: st.id, revealAt: new Date(now + st.off * 86400000).toISOString() })),
       carrier: null, carrierIntl: null, carrierLocal: null,
@@ -2567,15 +2568,22 @@ const EMAILCFG_DEFAULTS = {
   fromEmail: '',         // ex.: orders@seudominio.com
   fromName: '',          // nome exibido no remetente
   replyTo: '',           // ex.: help@seudominio.com
+  logoUrl: '',           // logo da loja exibida na faixa do topo dos e-mails
   lang: 'en',            // idioma padrão dos e-mails
   automations: { orderCreated: false, paymentApproved: false, shipping: false, delivery: false, abandoned: false },
   antiDup: false,        // "conferi o que a Shopify ainda envia" (trava anti-duplicação)
+  // cupons da recuperação (crie códigos iguais na Shopify): c1 = 4º e-mail, c2 = 5º (final)
+  coupons: { c1: { code: '', pct: 10 }, c2: { code: '', pct: 15 } },
 };
 
 async function loadEmailCfg() {
   const raw = { ...EMAILCFG_DEFAULTS, ...((await db.readDoc('emailcfg', {})) || {}) };
   try { raw.apiKey = raw.apiKey ? db.decrypt(raw.apiKey) : ''; } catch { raw.apiKey = ''; }
   raw.automations = { ...EMAILCFG_DEFAULTS.automations, ...(raw.automations || {}) };
+  raw.coupons = {
+    c1: { ...EMAILCFG_DEFAULTS.coupons.c1, ...((raw.coupons || {}).c1 || {}) },
+    c2: { ...EMAILCFG_DEFAULTS.coupons.c2, ...((raw.coupons || {}).c2 || {}) },
+  };
   return raw;
 }
 
@@ -2585,55 +2593,147 @@ async function saveEmailCfg(cfg) {
 
 const emailReady = (cfg) => !!(cfg.apiKey && cfg.fromEmail);
 
-/* textos dos e-mails em 4 idiomas */
+/* textos dos e-mails em 4 idiomas — {p} nos textos vira o nome do produto em negrito */
 const MAIL_I18N = {
   en: {
-    greet: (n) => n ? `Hi ${n},` : 'Hi,',
-    labels: { order: 'Order', summary: 'Order summary', item: 'Item', qty: 'Qty.', total: 'Total', privacy: 'This access is private. Please do not share the tracking link.' },
-    order_created: { t: 'We received your order', s: (o) => `We received your order ${o.number}`, b: 'Your order was created and is waiting for payment confirmation. We will email you as soon as it is approved.', cta: null },
-    payment_approved: { t: 'Payment confirmed', s: (o) => `Payment confirmed — order ${o.number}`, b: 'We have received the payment for your order. Your selection is being prepared and we will let you know as soon as shipping is confirmed.', cta: null },
-    ship_created: { t: 'Your order is on its way', s: (o) => `Your tracking code for order ${o.number}`, b: 'Your package is on the way. Follow every step of the delivery with the code below.', cta: 'Track order', codeLabel: 'Tracking code' },
-    ship_step: { t: 'Delivery update', s: (o, step) => `Delivery update — ${step}`, b: 'Your delivery just moved forward. Current status:', cta: 'See full timeline' },
-    abandoned_1: { t: 'You are almost there', s: () => 'You are almost there…', b: 'Your cart is saved and ready — complete your order in one click before it expires.', cta: 'Finish my order' },
-    abandoned_2: { t: 'We saved your cart', s: () => 'We saved your cart', b: 'Still thinking? Your items are reserved. Come back and finish whenever you want.', cta: 'Return to checkout' },
-    abandoned_3: { t: 'Limited stock', s: () => 'Limited stock on your items', b: 'The items in your cart are selling fast. Secure yours before they run out.', cta: 'Complete my purchase' },
-    abandoned_4: { t: 'Last chance', s: () => 'Last chance — your cart expires soon', b: 'This is our final reminder: your cart will be released soon. Finish now to keep your items.', cta: 'Finish now' },
+    greet: (n) => n ? `Hi, ${n}!` : 'Hi!',
+    labels: {
+      summary: 'Order summary', total: 'Total', address: 'Delivery address',
+      est: (d) => `Estimated delivery by ${d}`, reason: (site) => `You received this email because you started an order at ${site}.`,
+      privacy: 'This access is private. Please do not share the tracking link.',
+      shipSoon: 'We will send you the tracking link as soon as your order leaves the shipping center.',
+      yourItems: 'your items',
+    },
+    order_created: { icon: 'check', t: 'We received your order!', s: (o) => `We received your order ${o.number}`, b: 'Your order is waiting for payment confirmation — we will let you know as soon as it is approved.' },
+    payment_approved: { icon: 'check', t: 'Thank you for your purchase!', s: (o) => `Payment confirmed — order ${o.number}`, b: 'We received your order and it is already being prepared.' },
+    ship_created: { icon: 'box', t: 'Your order has been shipped!', s: (o) => `Your tracking code for order ${o.number}`, b: 'It is already on its way.', cta: () => 'Track my order →', codeLabel: 'Tracking code' },
+    ship_step: { icon: 'box', t: 'Delivery update', s: (o, step) => `Delivery update — ${step}`, b: 'Your delivery just moved forward. Current status:', cta: () => 'See full timeline →', codeLabel: 'Tracking code' },
+    abandoned_1: {
+      s: () => 'Your order is saved',
+      paras: () => ['We saw you started your order of {p} but did not get to finish it. No worries: we saved everything just the way you left it.', 'Only one step left. Click below and pick up exactly where you were — no need to fill anything in again.', 'If you had any trouble with the payment or the page, reply to this email and we will help you right away.'],
+      cta: () => 'Complete my order',
+    },
+    abandoned_2: { lead: 'Forgot something? 🛒', s: () => 'Forgot something? 🛒', paras: () => ['Your order of {p} is still waiting for you. Complete it now before it sells out.'], cta: () => 'Complete my order' },
+    abandoned_3: { lead: 'Questions? We are here to help 💬', s: () => 'Questions? We are here to help', paras: () => ['If you had any problem completing your purchase of {p}, just reply to this email. Our team answers within minutes.'], cta: () => 'Complete my order' },
+    abandoned_4: {
+      s: (d) => d && d.coupon ? `${d.coupon.pct}% off your order — today only` : 'Your cart expires soon',
+      paras: (d) => d.coupon
+        ? ['Let us be direct: we want {p} to reach you. So we prepared something:', `${d.coupon.pct}% off with the code below — valid only until ${d.until}.`, 'After that the code stops working and the order goes back to full price. Not a marketing line: the system disables it automatically.', 'Apply it at checkout — your cart is still saved just as you left it.']
+        : ['Your cart will be released soon. Complete your order now to keep {p}.'],
+      cta: (d) => d.coupon ? `Use my ${d.coupon.pct}% off` : 'Finish now',
+    },
+    abandoned_5: {
+      s: (d) => d && d.coupon ? `Our best discount — ${d.coupon.pct}% off` : 'Last email about your order',
+      paras: (d) => d.coupon
+        ? ['This is the last email we send about your order — we promise.', 'Before closing your cart, here is our best discount:', `${d.coupon.pct}% OFF with the code below — valid until ${d.until}. It is the biggest discount we offer.`, 'If you decide it is not for you, that is fine — we will not write about this order again.']
+        : ['This is the last email we send about your order — we promise.', 'Your cart will be released soon. If you decide it is not for you, that is fine — we will not write again.'],
+      cta: (d) => d.coupon ? `Get the ${d.coupon.pct}% off` : 'Complete my order',
+    },
   },
   pt: {
     greet: (n) => n ? `Olá, ${n}!` : 'Olá!',
-    labels: { order: 'Pedido', summary: 'Resumo do pedido', item: 'Item', qty: 'Qtd.', total: 'Total', privacy: 'Este acesso é privado. Não compartilhe o link de acompanhamento.' },
-    order_created: { t: 'Recebemos seu pedido', s: (o) => `Recebemos seu pedido ${o.number}`, b: 'Seu pedido foi criado e está aguardando a confirmação do pagamento. Assim que aprovar, a gente te avisa por aqui.', cta: null },
-    payment_approved: { t: 'Pagamento confirmado', s: (o) => `Pagamento confirmado — pedido ${o.number}`, b: 'Recebemos o pagamento do seu pedido. Sua seleção já está em preparação e avisaremos assim que o envio for confirmado.', cta: null },
-    ship_created: { t: 'Seu pedido está a caminho', s: (o) => `Seu código de rastreio do pedido ${o.number}`, b: 'Seu pacote está a caminho. Acompanhe cada etapa da entrega com o código abaixo.', cta: 'Acompanhar pedido', codeLabel: 'Código de rastreio' },
-    ship_step: { t: 'Atualização da entrega', s: (o, step) => `Atualização da entrega — ${step}`, b: 'Sua entrega acabou de avançar. Situação atual:', cta: 'Ver linha do tempo' },
-    abandoned_1: { t: 'Quase lá', s: () => 'Quase lá…', b: 'Seu carrinho está salvo e pronto — conclua o pedido em um clique antes que expire.', cta: 'Finalizar pedido' },
-    abandoned_2: { t: 'Guardamos seu carrinho', s: () => 'Guardamos seu carrinho', b: 'Ainda pensando? Seus itens estão reservados. Volte e finalize quando quiser.', cta: 'Voltar ao checkout' },
-    abandoned_3: { t: 'Estoque limitado', s: () => 'Estoque limitado nos seus itens', b: 'Os itens do seu carrinho estão saindo rápido. Garanta os seus antes que acabem.', cta: 'Concluir compra' },
-    abandoned_4: { t: 'Última chance', s: () => 'Última chance — seu carrinho expira em breve', b: 'Este é nosso último lembrete: seu carrinho será liberado em breve. Finalize agora pra garantir.', cta: 'Finalizar agora' },
+    labels: {
+      summary: 'Resumo do pedido', total: 'Total', address: 'Endereço de entrega',
+      est: (d) => `Entrega estimada até ${d}`, reason: (site) => `Você recebeu este e-mail porque iniciou um pedido em ${site}.`,
+      privacy: 'Este acesso é privado. Não compartilhe o link de acompanhamento.',
+      shipSoon: 'Enviaremos o link de rastreio assim que seu pedido sair do centro de envios.',
+      yourItems: 'seus itens',
+    },
+    order_created: { icon: 'check', t: 'Recebemos seu pedido!', s: (o) => `Recebemos seu pedido ${o.number}`, b: 'Seu pedido está aguardando a confirmação do pagamento — avisamos assim que aprovar.' },
+    payment_approved: { icon: 'check', t: 'Obrigado pela sua compra!', s: (o) => `Pagamento confirmado — pedido ${o.number}`, b: 'Recebemos seu pedido e ele já está em preparação.' },
+    ship_created: { icon: 'box', t: 'Seu pedido foi despachado!', s: (o) => `Seu código de rastreio do pedido ${o.number}`, b: 'Ele já está a caminho.', cta: () => 'Seguir meu pedido →', codeLabel: 'Código de rastreio' },
+    ship_step: { icon: 'box', t: 'Atualização da entrega', s: (o, step) => `Atualização da entrega — ${step}`, b: 'Sua entrega acabou de avançar. Situação atual:', cta: () => 'Ver linha do tempo →', codeLabel: 'Código de rastreio' },
+    abandoned_1: {
+      s: () => 'Seu pedido ficou guardado',
+      paras: () => ['Vimos que você começou seu pedido de {p}, mas não chegou a concluir. Tranquilo: guardamos tudo do jeitinho que você deixou.', 'Só falta um passo. Clique abaixo e retome exatamente de onde parou — não precisa preencher nada de novo.', 'Se teve qualquer problema com o pagamento ou com a página, responda este e-mail que te ajudamos na hora.'],
+      cta: () => 'Completar meu pedido',
+    },
+    abandoned_2: { lead: 'Esqueceu algo? 🛒', s: () => 'Esqueceu algo? 🛒', paras: () => ['Seu pedido de {p} ainda está te esperando. Conclua agora antes que esgote.'], cta: () => 'Completar meu pedido' },
+    abandoned_3: { lead: 'Dúvidas? Estamos aqui pra ajudar 💬', s: () => 'Dúvidas? Estamos aqui pra ajudar', paras: () => ['Se você teve algum problema ao concluir sua compra de {p}, é só responder este e-mail. Nossa equipe responde em minutos.'], cta: () => 'Completar meu pedido' },
+    abandoned_4: {
+      s: (d) => d && d.coupon ? `${d.coupon.pct}% de desconto no seu pedido — só hoje` : 'Seu carrinho expira em breve',
+      paras: (d) => d.coupon
+        ? ['Vamos ser diretos: queremos que {p} chegue até você. Então preparamos algo:', `${d.coupon.pct}% de desconto com o código abaixo — válido somente até ${d.until}.`, 'Depois disso o código deixa de funcionar e o pedido volta ao preço normal. Não é frase de marketing: o sistema desativa sozinho.', 'Aplique no checkout — seu carrinho continua guardado como você deixou.']
+        : ['Seu carrinho será liberado em breve. Conclua agora pra garantir {p}.'],
+      cta: (d) => d.coupon ? `Usar meu ${d.coupon.pct}% OFF` : 'Finalizar agora',
+    },
+    abandoned_5: {
+      s: (d) => d && d.coupon ? `Nosso melhor desconto — ${d.coupon.pct}% OFF` : 'Último e-mail sobre seu pedido',
+      paras: (d) => d.coupon
+        ? ['Este é o último e-mail que enviamos sobre seu pedido — prometemos.', 'Antes de liberar seu carrinho, deixamos nosso melhor desconto:', `${d.coupon.pct}% OFF com o código abaixo — válido até ${d.until}. É o maior desconto que oferecemos.`, 'Se decidir que não é pra você, tudo bem — não escrevemos mais sobre este pedido.']
+        : ['Este é o último e-mail que enviamos sobre seu pedido — prometemos.', 'Seu carrinho será liberado em breve. Se decidir que não é pra você, tudo bem — não escrevemos mais.'],
+      cta: (d) => d.coupon ? `Aproveitar o ${d.coupon.pct}% OFF` : 'Completar meu pedido',
+    },
   },
   es: {
     greet: (n) => n ? `¡Hola, ${n}!` : '¡Hola!',
-    labels: { order: 'Pedido', summary: 'Resumen del pedido', item: 'Artículo', qty: 'Cant.', total: 'Total', privacy: 'Este acceso es privado. No compartas el enlace de seguimiento.' },
-    order_created: { t: 'Recibimos tu pedido', s: (o) => `Recibimos tu pedido ${o.number}`, b: 'Tu pedido fue creado y está esperando la confirmación del pago. Te avisaremos en cuanto se apruebe.', cta: null },
-    payment_approved: { t: 'Pago confirmado', s: (o) => `Pago confirmado — pedido ${o.number}`, b: 'Recibimos el pago de tu pedido. Tu selección ya está en preparación y te avisaremos en cuanto se confirme el envío.', cta: null },
-    ship_created: { t: 'Tu pedido va en camino', s: (o) => `Tu código de seguimiento del pedido ${o.number}`, b: 'Tu paquete está en camino. Sigue cada etapa de la entrega con el código de abajo.', cta: 'Seguir pedido', codeLabel: 'Código de seguimiento' },
-    ship_step: { t: 'Actualización de entrega', s: (o, step) => `Actualización de entrega — ${step}`, b: 'Tu entrega acaba de avanzar. Estado actual:', cta: 'Ver línea de tiempo' },
-    abandoned_1: { t: 'Estás a un paso', s: () => 'Estás a un paso…', b: 'Tu carrito está guardado y listo — completa tu pedido en un clic antes de que expire.', cta: 'Finalizar pedido' },
-    abandoned_2: { t: 'Guardamos tu carrito', s: () => 'Guardamos tu carrito', b: '¿Aún lo piensas? Tus artículos están reservados. Vuelve y termina cuando quieras.', cta: 'Volver al checkout' },
-    abandoned_3: { t: 'Stock limitado', s: () => 'Stock limitado en tus artículos', b: 'Los artículos de tu carrito se agotan rápido. Asegura los tuyos antes de que se acaben.', cta: 'Completar compra' },
-    abandoned_4: { t: 'Última oportunidad', s: () => 'Última oportunidad — tu carrito expira pronto', b: 'Este es nuestro último recordatorio: tu carrito se liberará pronto. Finaliza ahora para asegurar tus artículos.', cta: 'Finalizar ahora' },
+    labels: {
+      summary: 'Resumen del pedido', total: 'Total', address: 'Dirección de entrega',
+      est: (d) => `Entrega estimada hasta ${d}`, reason: (site) => `Recibiste este correo porque iniciaste un pedido en ${site}.`,
+      privacy: 'Este acceso es privado. No compartas el enlace de seguimiento.',
+      shipSoon: 'Te enviaremos el enlace de seguimiento en cuanto tu pedido salga del centro de envíos.',
+      yourItems: 'tus artículos',
+    },
+    order_created: { icon: 'check', t: '¡Recibimos tu pedido!', s: (o) => `Recibimos tu pedido ${o.number}`, b: 'Tu pedido está esperando la confirmación del pago — te avisamos en cuanto se apruebe.' },
+    payment_approved: { icon: 'check', t: '¡Gracias por tu compra!', s: (o) => `Pago confirmado — pedido ${o.number}`, b: 'Recibimos tu pedido y ya está en preparación.' },
+    ship_created: { icon: 'box', t: '¡Tu pedido fue despachado!', s: (o) => `Tu código de seguimiento del pedido ${o.number}`, b: 'Ya está en camino.', cta: () => 'Seguir mi pedido →', codeLabel: 'Código de seguimiento' },
+    ship_step: { icon: 'box', t: 'Actualización de entrega', s: (o, step) => `Actualización de entrega — ${step}`, b: 'Tu entrega acaba de avanzar. Estado actual:', cta: () => 'Ver línea de tiempo →', codeLabel: 'Código de seguimiento' },
+    abandoned_1: {
+      s: () => 'Tu pedido quedó guardado',
+      paras: () => ['Vimos que empezaste tu pedido de {p} pero no llegaste a completarlo. Tranquilo: guardamos todo tal como lo dejaste.', 'Solo te falta un paso. Haz clic abajo y retoma exactamente donde estabas — no hace falta cargar nada de nuevo.', 'Si tuviste algún problema con el pago o la página, responde este correo y te ayudamos al instante.'],
+      cta: () => 'Completar mi pedido',
+    },
+    abandoned_2: { lead: '¿Olvidaste algo? 🛒', s: () => '¿Olvidaste algo? 🛒', paras: () => ['Tu pedido de {p} todavía te está esperando. Complétalo ahora antes de que se agote.'], cta: () => 'Completar mi pedido' },
+    abandoned_3: { lead: '¿Tienes dudas? Estamos para ayudarte 💬', s: () => '¿Tienes dudas? Estamos para ayudarte', paras: () => ['Si tuviste algún problema al completar tu compra de {p}, responde este correo. Nuestro equipo te responde en minutos.'], cta: () => 'Completar mi pedido' },
+    abandoned_4: {
+      s: (d) => d && d.coupon ? `${d.coupon.pct}% de descuento en tu pedido — solo hoy` : 'Tu carrito expira pronto',
+      paras: (d) => d.coupon
+        ? ['Vamos a ser directos: queremos que {p} llegue hasta ti. Entonces preparamos algo:', `${d.coupon.pct}% de descuento con el código abajo — válido solamente hasta ${d.until}.`, 'Después de eso, el código deja de funcionar y el pedido vuelve al precio normal. No es frase de marketing: el sistema lo desactiva automáticamente.', 'Aplícalo en el checkout — tu carrito sigue guardado tal como lo dejaste.']
+        : ['Tu carrito se liberará pronto. Completa ahora para asegurar {p}.'],
+      cta: (d) => d.coupon ? `Usar mi ${d.coupon.pct}% OFF` : 'Finalizar ahora',
+    },
+    abandoned_5: {
+      s: (d) => d && d.coupon ? `Nuestro mejor descuento — ${d.coupon.pct}% OFF` : 'Último correo sobre tu pedido',
+      paras: (d) => d.coupon
+        ? ['Este es el último correo que enviamos sobre tu pedido — lo prometemos.', 'Antes de cerrar tu carrito, dejamos nuestro mejor descuento:', `${d.coupon.pct}% OFF con el código abajo — válido hasta ${d.until}. Es el mayor descuento que ofrecemos.`, 'Si decides que no es para ti, todo bien — no te escribiremos más sobre este pedido.']
+        : ['Este es el último correo que enviamos sobre tu pedido — lo prometemos.', 'Tu carrito se liberará pronto. Si decides que no es para ti, todo bien — no te escribiremos más.'],
+      cta: (d) => d.coupon ? `Aprovechar el ${d.coupon.pct}% OFF` : 'Completar mi pedido',
+    },
   },
   de: {
-    greet: (n) => n ? `Hallo ${n},` : 'Hallo,',
-    labels: { order: 'Bestellung', summary: 'Bestellübersicht', item: 'Artikel', qty: 'Menge', total: 'Gesamt', privacy: 'Dieser Zugang ist privat. Bitte teilen Sie den Sendungslink nicht.' },
-    order_created: { t: 'Bestellung eingegangen', s: (o) => `Wir haben Ihre Bestellung ${o.number} erhalten`, b: 'Ihre Bestellung wurde erstellt und wartet auf die Zahlungsbestätigung. Wir melden uns, sobald sie genehmigt ist.', cta: null },
-    payment_approved: { t: 'Zahlung bestätigt', s: (o) => `Zahlung bestätigt — Bestellung ${o.number}`, b: 'Wir haben die Zahlung für Ihre Bestellung erhalten. Ihre Auswahl wird vorbereitet und wir melden uns, sobald der Versand bestätigt ist.', cta: null },
-    ship_created: { t: 'Ihre Bestellung ist unterwegs', s: (o) => `Ihre Sendungsnummer zur Bestellung ${o.number}`, b: 'Ihr Paket ist unterwegs. Verfolgen Sie jeden Schritt der Lieferung mit dem Code unten.', cta: 'Sendung verfolgen', codeLabel: 'Sendungsnummer' },
-    ship_step: { t: 'Lieferupdate', s: (o, step) => `Lieferupdate — ${step}`, b: 'Ihre Lieferung ist einen Schritt weiter. Aktueller Status:', cta: 'Zeitleiste ansehen' },
-    abandoned_1: { t: 'Fast geschafft', s: () => 'Fast geschafft…', b: 'Ihr Warenkorb ist gespeichert — schließen Sie Ihre Bestellung mit einem Klick ab, bevor er abläuft.', cta: 'Bestellung abschließen' },
-    abandoned_2: { t: 'Warenkorb gespeichert', s: () => 'Wir haben Ihren Warenkorb gespeichert', b: 'Noch unentschlossen? Ihre Artikel sind reserviert. Kommen Sie zurück, wann immer Sie möchten.', cta: 'Zurück zum Checkout' },
-    abandoned_3: { t: 'Begrenzter Vorrat', s: () => 'Begrenzter Vorrat bei Ihren Artikeln', b: 'Die Artikel in Ihrem Warenkorb sind schnell vergriffen. Sichern Sie sich Ihre, bevor sie ausverkauft sind.', cta: 'Kauf abschließen' },
-    abandoned_4: { t: 'Letzte Chance', s: () => 'Letzte Chance — Ihr Warenkorb läuft bald ab', b: 'Das ist unsere letzte Erinnerung: Ihr Warenkorb wird bald freigegeben. Schließen Sie jetzt ab.', cta: 'Jetzt abschließen' },
+    greet: (n) => n ? `Hallo, ${n}!` : 'Hallo!',
+    labels: {
+      summary: 'Bestellübersicht', total: 'Gesamt', address: 'Lieferadresse',
+      est: (d) => `Voraussichtliche Zustellung bis ${d}`, reason: (site) => `Sie erhalten diese E-Mail, weil Sie eine Bestellung bei ${site} begonnen haben.`,
+      privacy: 'Dieser Zugang ist privat. Bitte teilen Sie den Sendungslink nicht.',
+      shipSoon: 'Wir senden Ihnen den Sendungslink, sobald Ihre Bestellung das Versandzentrum verlässt.',
+      yourItems: 'Ihre Artikel',
+    },
+    order_created: { icon: 'check', t: 'Bestellung eingegangen!', s: (o) => `Wir haben Ihre Bestellung ${o.number} erhalten`, b: 'Ihre Bestellung wartet auf die Zahlungsbestätigung — wir melden uns, sobald sie genehmigt ist.' },
+    payment_approved: { icon: 'check', t: 'Danke für Ihren Einkauf!', s: (o) => `Zahlung bestätigt — Bestellung ${o.number}`, b: 'Wir haben Ihre Bestellung erhalten und sie wird bereits vorbereitet.' },
+    ship_created: { icon: 'box', t: 'Ihre Bestellung wurde versandt!', s: (o) => `Ihre Sendungsnummer zur Bestellung ${o.number}`, b: 'Sie ist bereits unterwegs.', cta: () => 'Sendung verfolgen →', codeLabel: 'Sendungsnummer' },
+    ship_step: { icon: 'box', t: 'Lieferupdate', s: (o, step) => `Lieferupdate — ${step}`, b: 'Ihre Lieferung ist einen Schritt weiter. Aktueller Status:', cta: () => 'Zeitleiste ansehen →', codeLabel: 'Sendungsnummer' },
+    abandoned_1: {
+      s: () => 'Ihre Bestellung ist gespeichert',
+      paras: () => ['Wir haben gesehen, dass Sie Ihre Bestellung von {p} begonnen, aber nicht abgeschlossen haben. Keine Sorge: Wir haben alles genau so gespeichert, wie Sie es verlassen haben.', 'Es fehlt nur noch ein Schritt. Klicken Sie unten und machen Sie genau dort weiter — Sie müssen nichts erneut eingeben.', 'Falls es ein Problem mit der Zahlung oder der Seite gab, antworten Sie auf diese E-Mail und wir helfen sofort.'],
+      cta: () => 'Bestellung abschließen',
+    },
+    abandoned_2: { lead: 'Etwas vergessen? 🛒', s: () => 'Etwas vergessen? 🛒', paras: () => ['Ihre Bestellung von {p} wartet noch auf Sie. Schließen Sie sie ab, bevor sie ausverkauft ist.'], cta: () => 'Bestellung abschließen' },
+    abandoned_3: { lead: 'Fragen? Wir helfen gern 💬', s: () => 'Fragen? Wir helfen gern', paras: () => ['Falls es beim Abschluss Ihres Kaufs von {p} ein Problem gab, antworten Sie einfach auf diese E-Mail. Unser Team antwortet in Minuten.'], cta: () => 'Bestellung abschließen' },
+    abandoned_4: {
+      s: (d) => d && d.coupon ? `${d.coupon.pct}% Rabatt auf Ihre Bestellung — nur heute` : 'Ihr Warenkorb läuft bald ab',
+      paras: (d) => d.coupon
+        ? ['Ganz direkt: Wir möchten, dass {p} bei Ihnen ankommt. Deshalb haben wir etwas vorbereitet:', `${d.coupon.pct}% Rabatt mit dem Code unten — gültig nur bis ${d.until}.`, 'Danach funktioniert der Code nicht mehr und die Bestellung kehrt zum Normalpreis zurück. Kein Marketing-Spruch: Das System deaktiviert ihn automatisch.', 'Im Checkout anwenden — Ihr Warenkorb ist weiterhin gespeichert.']
+        : ['Ihr Warenkorb wird bald freigegeben. Schließen Sie jetzt ab, um {p} zu sichern.'],
+      cta: (d) => d.coupon ? `Meine ${d.coupon.pct}% sichern` : 'Jetzt abschließen',
+    },
+    abandoned_5: {
+      s: (d) => d && d.coupon ? `Unser bester Rabatt — ${d.coupon.pct}% OFF` : 'Letzte E-Mail zu Ihrer Bestellung',
+      paras: (d) => d.coupon
+        ? ['Dies ist die letzte E-Mail zu Ihrer Bestellung — versprochen.', 'Bevor wir Ihren Warenkorb schließen, hier unser bester Rabatt:', `${d.coupon.pct}% OFF mit dem Code unten — gültig bis ${d.until}. Es ist der größte Rabatt, den wir anbieten.`, 'Wenn Sie entscheiden, dass es nichts für Sie ist, völlig in Ordnung — wir schreiben nicht mehr zu dieser Bestellung.']
+        : ['Dies ist die letzte E-Mail zu Ihrer Bestellung — versprochen.', 'Ihr Warenkorb wird bald freigegeben. Wenn es nichts für Sie ist, völlig in Ordnung — wir schreiben nicht mehr.'],
+      cta: (d) => d.coupon ? `${d.coupon.pct}% OFF nutzen` : 'Bestellung abschließen',
+    },
   },
 };
 
@@ -2647,51 +2747,66 @@ function mailEsc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// layout único estilo "recibo premium": fundo branco, serifa no logo e no título,
-// resumo do pedido com itens + total e botão preto — usado por todos os tipos
-function renderEmailHtml({ fromName, title, orderRef, greet, body, code, codeLabel, ctaLabel, ctaUrl, extra, summary, footNote }) {
-  const serif = "Georgia,'Times New Roman',serif";
-  const sans = "-apple-system,'Segoe UI',Helvetica,Arial,sans-serif";
+// caixa cinza com cabeçalho em caixa alta (resumo, código, endereço)
+function mailBox(label, innerHtml) {
+  return `<div style="background:#f6f7f9;border:1px solid #eceef2;border-radius:10px;padding:16px 18px;margin:18px 0 0;text-align:center">
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:#8a94a4;font-weight:700;margin-bottom:10px">${mailEsc(label)}</div>
+    ${innerHtml}
+  </div>`;
+}
+
+// layout único: faixa escura com a logo da loja, conteúdo centralizado com ícone,
+// caixas de resumo/código/endereço, cupom tracejado e botão azul — usado por todos os tipos
+function renderEmailHtml({ fromName, logoUrl, icon, title, greet, lead, parasHtml, body, code, codeLabel, estLine, extra, couponCode, ctaLabel, ctaUrl, summary, address, addressLabel, footNote, reasonNote, supportEmail, centered }) {
   const e = mailEsc;
-  return `<!doctype html><html><body style="margin:0;padding:0;background:#ffffff;color:#1a1a1a;font-family:${sans}">
-  <div style="max-width:600px;margin:0 auto">
-    <div style="text-align:center;padding:26px 24px;border-bottom:1px solid #ececec">
-      <span style="font-family:${serif};font-size:24px;letter-spacing:.02em;color:#1a1a1a">${e(fromName || '')}</span>
+  const sans = "-apple-system,'Segoe UI',Helvetica,Arial,sans-serif";
+  const iconHtml = icon === 'check'
+    ? `<div style="display:inline-block;width:54px;height:54px;line-height:54px;border-radius:12px;background:#34c777;color:#ffffff;font-size:28px;font-weight:800;text-align:center">✓</div>`
+    : icon === 'box' ? `<div style="font-size:44px;line-height:1">📦</div>` : '';
+  const summaryHtml = summary && summary.items && summary.items.length ? mailBox(summary.heading, `
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">
+      ${summary.items.map((it) => `<tr>
+        <td align="left" style="font-size:13.5px;line-height:1.5;color:#2a303b;font-weight:600;padding:5px 10px 5px 0">${e((it.qty > 1 ? it.qty + '× ' : '') + it.title)}</td>
+        <td align="right" style="font-size:13.5px;color:#d93025;font-weight:700;white-space:nowrap;padding:5px 0">${e(it.priceFmt || '')}</td>
+      </tr>`).join('')}
+      ${summary.items.length > 1 ? `<tr>
+        <td align="left" style="font-size:13.5px;color:#15181e;font-weight:800;padding:10px 10px 0 0;border-top:1px solid #e4e7ec">${e(summary.totalLabel)}</td>
+        <td align="right" style="font-size:14.5px;color:#d93025;font-weight:800;padding:10px 0 0;border-top:1px solid #e4e7ec">${e(summary.totalFmt)}</td>
+      </tr>` : ''}
+    </table>`) : '';
+  const codeHtml = code ? mailBox(codeLabel || '', `
+    <div style="font-size:21px;font-weight:800;letter-spacing:2px;color:#15181e;font-family:${sans}">${e(code)}</div>
+    ${estLine ? `<div style="font-size:12.5px;font-weight:700;color:#16a34a;margin-top:8px">${e(estLine)}</div>` : ''}`) : '';
+  const addressHtml = address ? mailBox(addressLabel || '', `<div style="font-size:13.5px;color:#4b5563;line-height:1.6">${e(address)}</div>`) : '';
+  const couponHtml = couponCode ? `<div style="border:1.5px dashed #c6ccd8;border-radius:8px;padding:20px 16px;margin:20px 0 0;text-align:center">
+    <span style="font-size:22px;font-weight:800;letter-spacing:6px;color:#15181e">${e(couponCode)}</span>
+  </div>` : '';
+  const align = centered ? 'center' : 'left';
+  return `<!doctype html><html><body style="margin:0;padding:0;background:#eef0f4;font-family:${sans}">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff">
+    <div style="background:#1b2130;text-align:center;padding:24px 20px">
+      ${logoUrl ? `<img src="${e(logoUrl)}" alt="${e(fromName || '')}" style="max-height:46px;max-width:240px;vertical-align:middle">`
+        : `<span style="color:#ffffff;font-size:17px;font-weight:800;letter-spacing:.14em;text-transform:uppercase">${e(fromName || '')}</span>`}
     </div>
-    <div style="padding:34px 28px 30px">
-      ${orderRef ? `<div style="font-size:11px;text-transform:uppercase;letter-spacing:.16em;color:#9b9b9b;margin:0 0 10px">${e(orderRef)}</div>` : ''}
-      ${title ? `<h1 style="font-family:${serif};font-weight:400;font-size:29px;line-height:1.2;margin:0 0 22px;color:#111111">${e(title)}</h1>` : ''}
-      ${greet ? `<p style="margin:0 0 14px;font-size:15px;color:#111111">${e(greet)}</p>` : ''}
-      ${body ? `<p style="margin:0;font-size:14px;line-height:1.7;color:#4a4a4a">${e(body).replace(/\n/g, '<br>')}</p>` : ''}
-      ${extra ? `<p style="margin:12px 0 0;font-size:14px;line-height:1.7;color:#111111;font-weight:600">${e(extra)}</p>` : ''}
-      ${code ? `<div style="margin:26px 0 0">
-        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:#9b9b9b;margin-bottom:8px">${e(codeLabel || '')}</div>
-        <div style="display:inline-block;border:1px solid #dcdcdc;padding:12px 20px;font-family:Consolas,'Courier New',monospace;font-size:17px;font-weight:700;letter-spacing:3px;color:#111111">${e(code)}</div>
-      </div>` : ''}
-      ${summary && summary.items && summary.items.length ? `
-      <div style="border-top:1px solid #e8e8e8;margin:28px 0 0;padding-top:24px">
-        <p style="margin:0 0 12px;font-size:14px;font-weight:700;color:#111111">${e(summary.heading)}</p>
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">
-          <tr>
-            <td style="font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#9b9b9b;padding:0 0 8px;border-bottom:1px solid #ececec">${e(summary.itemLabel)}</td>
-            <td align="right" style="font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#9b9b9b;padding:0 0 8px;border-bottom:1px solid #ececec">${e(summary.qtyLabel)}</td>
-          </tr>
-          ${summary.items.map((it) => `<tr>
-            <td style="font-size:14px;color:#1a1a1a;padding:12px 0;border-bottom:1px solid #f4f4f4">${e((fromName ? fromName + ' · ' : '') + it.title)}</td>
-            <td align="right" style="font-size:14px;color:#4a4a4a;padding:12px 0;border-bottom:1px solid #f4f4f4">${e(String(it.qty))}</td>
-          </tr>`).join('')}
-          <tr>
-            <td style="font-size:14px;font-weight:700;color:#111111;padding:16px 0 0">${e(summary.totalLabel)}</td>
-            <td align="right" style="font-size:19px;font-weight:700;color:#111111;padding:16px 0 0">${e(summary.totalFmt)}</td>
-          </tr>
-        </table>
-      </div>` : ''}
-      ${ctaLabel && ctaUrl ? `<div style="margin:30px 0 0"><a href="${e(ctaUrl)}" style="display:inline-block;background:#111111;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:14px 28px;border-radius:3px">${e(ctaLabel)}</a></div>` : ''}
-      ${footNote ? `<p style="margin:22px 0 0;font-size:11.5px;color:#9b9b9b">${e(footNote)}</p>` : ''}
+    <div style="padding:30px 30px 28px;text-align:${align};color:#15181e">
+      ${iconHtml ? `<div style="text-align:center;margin-bottom:16px">${iconHtml}</div>` : ''}
+      ${title ? `<h1 style="margin:0 0 10px;font-size:23px;font-weight:700;color:#15181e;text-align:center">${e(title)}</h1>` : ''}
+      ${lead ? `<p style="margin:0 0 14px;font-size:15px;font-weight:700;color:#15181e">${e(lead)}</p>` : (greet && !centered ? `<p style="margin:0 0 14px;font-size:15px;font-weight:700;color:#15181e">${e(greet)}</p>` : '')}
+      ${centered && (greet || body) ? `<p style="margin:0;font-size:14px;line-height:1.7;color:#6b7280;text-align:center">${e([greet, body].filter(Boolean).join(' '))}</p>` : ''}
+      ${!centered && body ? `<p style="margin:0 0 12px;font-size:14px;line-height:1.75;color:#4b5563">${e(body).replace(/\n/g, '<br>')}</p>` : ''}
+      ${(parasHtml || []).map((p) => `<p style="margin:0 0 13px;font-size:14px;line-height:1.75;color:#4b5563">${p}</p>`).join('')}
+      ${extra ? `<p style="margin:12px 0 0;font-size:14px;font-weight:700;color:#15181e;text-align:center">${e(extra)}</p>` : ''}
+      ${summaryHtml}
+      ${codeHtml}
+      ${addressHtml}
+      ${couponHtml}
+      ${ctaLabel && ctaUrl ? `<div style="text-align:center;margin:26px 0 0"><a href="${e(ctaUrl)}" style="display:inline-block;background:#3b7cf6;color:#ffffff;text-decoration:none;font-size:13.5px;font-weight:700;letter-spacing:.04em;padding:13px 30px;border-radius:8px">${e(ctaLabel)}</a></div>` : ''}
+      ${footNote ? `<p style="margin:22px 0 0;font-size:12px;color:#8a94a4;text-align:center;line-height:1.6">${e(footNote)}</p>` : ''}
+      ${reasonNote ? `<p style="margin:18px 0 0;font-size:11.5px;color:#9aa3b2;text-align:center;line-height:1.6">${e(reasonNote)}</p>` : ''}
     </div>
-    <div style="padding:18px 24px 30px;border-top:1px solid #ececec;text-align:center">
-      <span style="font-family:${serif};font-size:13px;color:#b5b5b5">${e(fromName || '')}</span>
-    </div>
+    ${supportEmail ? `<div style="background:#f4f6f9;border-top:1px solid #e8ebf0;text-align:center;padding:15px 20px">
+      <span style="font-size:12px;color:#8a94a4">${e(supportEmail)}</span>
+    </div>` : ''}
   </div></body></html>`;
 }
 
@@ -2702,25 +2817,49 @@ function buildEmail(cfg, type, lang, data) {
   if (!T) throw new Error(`Tipo de e-mail desconhecido: ${type}`);
   const o = data.order || { number: '#1234' };
   const stepLabel = data.stepLabel || '';
-  const subject = type === 'ship_step' ? T.s(o, stepLabel) : T.s(o);
   const isAbandoned = type.startsWith('abandoned');
   const hasItems = !isAbandoned && Array.isArray(o.items) && o.items.length > 0;
+  const locale = MAIL_LOCALE[lang] || 'en-US';
+  const d = {
+    ...data,
+    coupon: data.coupon && data.coupon.code ? data.coupon : null,
+    until: new Date(Date.now() + 24 * 3600000).toLocaleString(locale, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }),
+  };
+  const subject = type === 'ship_step' ? T.s(o, stepLabel) : T.s(isAbandoned ? d : o);
+  // {p} vira o nome do produto em negrito (escapado)
+  const prodHtml = `<strong>${mailEsc(data.product || L.labels.yourItems)}</strong>`;
+  const parasHtml = isAbandoned && T.paras ? T.paras(d).map((p) => mailEsc(p).replace(/\{p\}/g, prodHtml)) : null;
+  const site = data.site || (data.url ? (() => { try { return new URL(data.url).host; } catch { return null; } })() : null);
+  const estLine = (type === 'ship_created' || type === 'ship_step') && data.estDelivery
+    ? L.labels.est(new Date(data.estDelivery).toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' })) : null;
   const html = renderEmailHtml({
     fromName: cfg.fromName || cfg.fromEmail,
-    title: T.t || subject,
-    orderRef: !isAbandoned && o.number ? `${L.labels.order} ${o.number}` : null,
+    logoUrl: cfg.logoUrl || '',
+    icon: T.icon || null,
+    title: isAbandoned ? null : T.t,
     greet: L.greet(data.name || ''),
-    body: T.b,
-    code: type === 'ship_created' ? data.code : null,
+    lead: T.lead || null,
+    parasHtml,
+    body: isAbandoned ? null : T.b,
+    code: type === 'ship_created' || type === 'ship_step' ? data.code : null,
     codeLabel: T.codeLabel,
+    estLine,
     extra: type === 'ship_step' ? stepLabel : null,
-    ctaLabel: T.cta,
+    couponCode: isAbandoned && d.coupon ? d.coupon.code : null,
+    ctaLabel: T.cta ? T.cta(d) : null,
     ctaUrl: data.url || null,
     summary: hasItems ? {
-      heading: L.labels.summary, itemLabel: L.labels.item, qtyLabel: L.labels.qty, totalLabel: L.labels.total,
-      items: o.items.slice(0, 8), totalFmt: mailMoney(o.total, o.currency, lang),
+      heading: L.labels.summary, totalLabel: L.labels.total,
+      items: o.items.slice(0, 8).map((it) => ({ ...it, priceFmt: mailMoney((it.price || 0) * (it.qty || 1), o.currency, lang) })),
+      totalFmt: mailMoney(o.total, o.currency, lang),
     } : null,
-    footNote: (type === 'ship_created' || type === 'ship_step') && data.url ? L.labels.privacy : null,
+    address: !isAbandoned ? (o.addr || null) : null,
+    addressLabel: L.labels.address,
+    footNote: type === 'order_created' || type === 'payment_approved' ? L.labels.shipSoon
+      : ((type === 'ship_created' || type === 'ship_step') && data.url ? L.labels.privacy : null),
+    reasonNote: isAbandoned && site ? L.labels.reason(site) : null,
+    supportEmail: cfg.replyTo || cfg.fromEmail || '',
+    centered: !isAbandoned,
   });
   return { subject, html };
 }
@@ -2759,6 +2898,7 @@ app.get('/api/email/config', async (req, res) => {
     const c = await loadEmailCfg();
     res.json({
       apiKeySet: !!c.apiKey, fromEmail: c.fromEmail, fromName: c.fromName, replyTo: c.replyTo,
+      logoUrl: c.logoUrl || '', coupons: c.coupons,
       lang: c.lang, automations: c.automations, antiDup: !!c.antiDup, ready: emailReady(c),
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2773,6 +2913,10 @@ app.put('/api/email/config', async (req, res) => {
     if (typeof b.fromEmail === 'string') c.fromEmail = b.fromEmail.trim().toLowerCase();
     if (typeof b.fromName === 'string') c.fromName = b.fromName.trim().slice(0, 60);
     if (typeof b.replyTo === 'string') c.replyTo = b.replyTo.trim().toLowerCase();
+    if (typeof b.logoUrl === 'string') {
+      const u = b.logoUrl.trim().slice(0, 300);
+      c.logoUrl = /^https?:\/\//i.test(u) ? u : '';
+    }
     if (['pt', 'es', 'en', 'de'].includes(b.lang)) c.lang = b.lang;
     if (b.automations && typeof b.automations === 'object') {
       // trava anti-duplicação: só liga automação com a checkbox marcada
@@ -2784,23 +2928,46 @@ app.put('/api/email/config', async (req, res) => {
       }
     }
     if (typeof b.antiDup === 'boolean') c.antiDup = b.antiDup;
+    if (b.coupons && typeof b.coupons === 'object') {
+      for (const k of ['c1', 'c2']) {
+        const cp = b.coupons[k];
+        if (!cp || typeof cp !== 'object') continue;
+        if (typeof cp.code === 'string') c.coupons[k].code = cp.code.toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 30);
+        const pct = parseInt(cp.pct, 10);
+        if (pct >= 1 && pct <= 90) c.coupons[k].pct = pct;
+      }
+    }
     await saveEmailCfg(c);
     res.json({ ok: true, ready: emailReady(c) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 const MAIL_SAMPLE = {
-  order: { number: '#1042', total: 59.9, currency: 'EUR', items: [{ title: 'Conjunto de perfumes', qty: 1, price: 59.9 }] },
+  order: {
+    number: '#1042', total: 169.9, currency: 'EUR',
+    items: [{ title: 'Conjunto de perfumes Premium, Kit 2 unidades', qty: 1, price: 169.9 }],
+    addr: 'Av. Corrientes 1234, Piso 5, Buenos Aires, C1043, AR',
+  },
   name: 'Maria', code: 'TK-A1B2C', url: 'https://exemplo.com', stepLabel: '—',
+  estDelivery: new Date(Date.now() + 14 * 86400000).toISOString(),
+  product: 'Conjunto de perfumes Premium, Kit 2 unidades', site: 'www.sualoja.com',
 };
+
+// dados de amostra por tipo: cupom real configurado (ou exemplo) nos e-mails 4 e 5
+function mailSampleFor(cfg, type) {
+  const d = { ...MAIL_SAMPLE };
+  if (type === 'abandoned_4') d.coupon = cfg.coupons.c1.code ? cfg.coupons.c1 : { code: 'CUPOM10', pct: cfg.coupons.c1.pct || 10 };
+  if (type === 'abandoned_5') d.coupon = cfg.coupons.c2.code ? cfg.coupons.c2 : { code: 'CUPOM15', pct: cfg.coupons.c2.pct || 15 };
+  return d;
+}
 
 app.get('/api/email/preview', async (req, res) => {
   try {
     const c = await loadEmailCfg();
     const lang = ['pt', 'es', 'en', 'de'].includes(req.query.lang) ? req.query.lang : c.lang;
-    const L = MAIL_I18N[lang];
-    const data = { ...MAIL_SAMPLE, stepLabel: (SHIP_I18N[lang] || SHIP_I18N.en).steps.intransit };
-    const { subject, html } = buildEmail({ ...c, fromName: c.fromName || 'Sua Loja' }, String(req.query.type || 'payment_approved'), lang, data);
+    const type = String(req.query.type || 'payment_approved');
+    const data = { ...mailSampleFor(c, type), stepLabel: (SHIP_I18N[lang] || SHIP_I18N.en).steps.intransit };
+    const { subject, html } = buildEmail({ ...c, fromName: c.fromName || 'Sua Loja' }, type, lang, data);
     res.type('html').send(`<!-- ${mailEsc(subject)} -->` + html);
   } catch (e) { res.status(400).type('html').send(`<p style="font-family:system-ui;padding:20px">${mailEsc(e.message)}</p>`); }
 });
@@ -2812,8 +2979,9 @@ app.post('/api/email/test', async (req, res) => {
     const { type, lang, to } = req.body || {};
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(to || ''))) return res.status(400).json({ error: 'Informe um e-mail de destino válido.' });
     const l = ['pt', 'es', 'en', 'de'].includes(lang) ? lang : c.lang;
-    const data = { ...MAIL_SAMPLE, stepLabel: (SHIP_I18N[l] || SHIP_I18N.en).steps.intransit };
-    const { subject, html } = buildEmail(c, String(type || 'payment_approved'), l, data);
+    const ty = String(type || 'payment_approved');
+    const data = { ...mailSampleFor(c, ty), stepLabel: (SHIP_I18N[l] || SHIP_I18N.en).steps.intransit };
+    const { subject, html } = buildEmail(c, ty, l, data);
     await sendResend(c, to, `[TESTE] ${subject}`, html);
     await logEmail({ to, type: `teste:${type}`, subject, status: 'enviado' });
     res.json({ ok: true });
@@ -2835,10 +3003,12 @@ app.post('/api/ship/email', async (req, res) => {
     if (!s) return res.status(404).json({ error: 'Envio não encontrado.' });
     if (!s.email) return res.status(400).json({ error: 'Este pedido não tem e-mail de cliente.' });
     const lang = (await loadShipCfg()).lang || c.lang;
+    const entrega = (s.steps || []).find((st) => st.id === 'delivered');
     const { subject, html } = buildEmail(c, 'ship_created', lang, {
-      order: { number: s.number, items: s.items, total: s.total, currency: s.currency },
+      order: { number: s.number, items: s.items, total: s.total, currency: s.currency, addr: s.addr || null },
       name: (s.customerName || '').split(' ')[0],
       code: s.code, url: `${appBaseUrl(req)}/t/${s.code}`,
+      estDelivery: entrega ? entrega.revealAt : null,
     });
     await sendResend(c, s.email, subject, html);
     s.emailStatus = 'enviado';
@@ -2904,10 +3074,12 @@ async function runEmailCycle(baseUrl) {
         if (!toggle) { continue; }
         try {
           const stepLabel = (SHIP_I18N[shipLang] || SHIP_I18N.en).steps[st.id] || st.id;
+          const entrega = (s.steps || []).find((x) => x.id === 'delivered');
           const { subject, html } = buildEmail(c, 'ship_step', shipLang, {
-            order: { number: s.number, items: s.items, total: s.total, currency: s.currency },
+            order: { number: s.number, items: s.items, total: s.total, currency: s.currency, addr: s.addr || null },
             name: (s.customerName || '').split(' ')[0],
-            stepLabel, url: `${baseUrl}/t/${s.code}`,
+            stepLabel, code: s.code, url: `${baseUrl}/t/${s.code}`,
+            estDelivery: entrega ? entrega.revealAt : null,
           });
           await sendResend(c, s.email, subject, html);
           s.notified.push(st.id);
@@ -2927,10 +3099,11 @@ async function runEmailCycle(baseUrl) {
 /* ---------- CRM de recuperação (checkouts abandonados) ---------- */
 
 const CRM_STAGES = [
-  { k: 's1', horas: 1, tipo: 'abandoned_1', nome: 'Quase lá…' },
-  { k: 's2', horas: 24, tipo: 'abandoned_2', nome: 'Ainda guardamos' },
-  { k: 's3', horas: 48, tipo: 'abandoned_3', nome: 'Estoque limitado' },
-  { k: 's4', horas: 72, tipo: 'abandoned_4', nome: 'Última tentativa' },
+  { k: 's1', horas: 1, tipo: 'abandoned_1', nome: 'Pedido guardado' },
+  { k: 's2', horas: 24, tipo: 'abandoned_2', nome: 'Esqueceu algo?' },
+  { k: 's3', horas: 48, tipo: 'abandoned_3', nome: 'Dúvidas? Suporte' },
+  { k: 's4', horas: 72, tipo: 'abandoned_4', nome: 'Cupom 1 (desconto)' },
+  { k: 's5', horas: 96, tipo: 'abandoned_5', nome: 'Cupom final' },
 ];
 
 async function fetchAbandoned(store, sinceDays = 7) {
@@ -2947,6 +3120,9 @@ async function fetchAbandoned(store, sinceDays = 7) {
     locale: ck.customer_locale || null,
     createdAt: ck.created_at,
     name: ck.billing_address ? [ck.billing_address.first_name, ck.billing_address.last_name].filter(Boolean).join(' ') : null,
+    product: (ck.line_items && ck.line_items[0])
+      ? ck.line_items[0].title + (ck.line_items.length > 1 ? ` (+${ck.line_items.length - 1})` : '')
+      : null,
   }));
 }
 
@@ -3004,7 +3180,7 @@ async function crmSnapshot() {
 app.get('/api/crm', async (req, res) => {
   try {
     const { cfg, crm, eligible, recuperados, erros } = await crmSnapshot();
-    const porEtapa = { s1: 0, s2: 0, s3: 0, s4: 0 };
+    const porEtapa = Object.fromEntries(CRM_STAGES.map((s) => [s.k, 0]));
     let abordados = 0;
     for (const stages of Object.values(crm.sent)) {
       let any = false;
@@ -3014,6 +3190,7 @@ app.get('/api/crm', async (req, res) => {
     res.json({
       enabled: !!cfg.automations.abandoned,
       ready: emailReady(cfg),
+      coupons: cfg.coupons,
       stages: CRM_STAGES.map((s) => ({ ...s, enviados: porEtapa[s.k] })),
       kpis: {
         emailsEnviados: Object.values(porEtapa).reduce((a, b) => a + b, 0),
@@ -3045,7 +3222,11 @@ async function runCrmCycle() {
       if (stages[st.k] || horas < st.horas) continue;
       try {
         const lang = ['pt', 'es', 'en', 'de'].includes((ck.locale || '').slice(0, 2)) ? ck.locale.slice(0, 2) : cfg.lang;
-        const { subject, html } = buildEmail(cfg, st.tipo, lang, { name: (ck.name || '').split(' ')[0], url: ck.url });
+        const coupon = st.k === 's4' ? cfg.coupons.c1 : (st.k === 's5' ? cfg.coupons.c2 : null);
+        const { subject, html } = buildEmail(cfg, st.tipo, lang, {
+          name: (ck.name || '').split(' ')[0], url: ck.url, product: ck.product,
+          coupon: coupon && coupon.code ? coupon : null,
+        });
         await sendResend(cfg, ck.email, subject, html);
         stages[st.k] = Date.now();
         stages._email = ck.email;
@@ -3087,7 +3268,7 @@ app.post('/api/inbox/new', async (req, res) => {
     const c = await loadEmailCfg();
     if (!recebido) {
       if (!emailReady(c)) return res.status(400).json({ error: 'Configure o Resend primeiro (aba E-mails).' });
-      const html = renderEmailHtml({ fromName: c.fromName || c.fromEmail, greet: '', body: String(message).slice(0, 4000), ctaLabel: null, ctaUrl: null });
+      const html = renderEmailHtml({ fromName: c.fromName || c.fromEmail, logoUrl: c.logoUrl || '', greet: '', body: String(message).slice(0, 4000), ctaLabel: null, ctaUrl: null, supportEmail: c.replyTo || c.fromEmail || '' });
       await sendResend({ ...c, fromEmail: c.replyTo || c.fromEmail }, email, String(subject || 'Contato').slice(0, 150), html);
       await logEmail({ to: email, type: 'suporte', subject: String(subject || 'Contato'), status: 'enviado' });
     }
@@ -3113,7 +3294,7 @@ app.post('/api/inbox/reply', async (req, res) => {
     if (!recebido) {
       const c = await loadEmailCfg();
       if (!emailReady(c)) return res.status(400).json({ error: 'Configure o Resend primeiro (aba E-mails).' });
-      const html = renderEmailHtml({ fromName: c.fromName || c.fromEmail, greet: '', body: String(message).slice(0, 4000), ctaLabel: null, ctaUrl: null });
+      const html = renderEmailHtml({ fromName: c.fromName || c.fromEmail, logoUrl: c.logoUrl || '', greet: '', body: String(message).slice(0, 4000), ctaLabel: null, ctaUrl: null, supportEmail: c.replyTo || c.fromEmail || '' });
       await sendResend({ ...c, fromEmail: c.replyTo || c.fromEmail }, convo.email, `Re: ${convo.subject}`, html);
       await logEmail({ to: convo.email, type: 'suporte', subject: `Re: ${convo.subject}`, status: 'enviado' });
     }

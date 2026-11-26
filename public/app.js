@@ -1581,8 +1581,9 @@ function drModalClose() { $('drModal').hidden = true; }
 const MAIL_TYPES = [
   ['payment_approved', 'Pagamento aprovado'], ['order_created', 'Pedido criado (pendente)'],
   ['ship_created', 'Rastreio gerado'], ['ship_step', 'Atualização da entrega'],
-  ['abandoned_1', 'Recuperação 1 — Quase lá (1h)'], ['abandoned_2', 'Recuperação 2 — Ainda guardamos (24h)'],
-  ['abandoned_3', 'Recuperação 3 — Estoque limitado (48h)'], ['abandoned_4', 'Recuperação 4 — Última tentativa (72h)'],
+  ['abandoned_1', 'Recuperação 1 — Pedido guardado (1h)'], ['abandoned_2', 'Recuperação 2 — Esqueceu algo? (24h)'],
+  ['abandoned_3', 'Recuperação 3 — Dúvidas/suporte (48h)'], ['abandoned_4', 'Recuperação 4 — Cupom 1 (72h)'],
+  ['abandoned_5', 'Recuperação 5 — Cupom final (96h)'],
 ];
 const MAIL_LANGS = { pt: 'Português', es: 'Espanhol', en: 'Inglês', de: 'Alemão' };
 
@@ -1599,7 +1600,7 @@ async function mailLoad() {
     ['paymentApproved', 'Pagamento aprovado', 'Uma confirmação por pedido pago.'],
     ['shipping', 'Preparação e expedição', 'E-mail quando o envio sai (etapa "Enviado").'],
     ['delivery', 'Atualizações da entrega', 'Trânsito, chegada ao país, saiu pra entrega e entregue.'],
-    ['abandoned', 'Carrinho abandonado', 'Sequência de recuperação do CRM (4 e-mails), só com consentimento.'],
+    ['abandoned', 'Carrinho abandonado', 'Sequência de recuperação do CRM (5 e-mails, com cupons), só com consentimento.'],
   ];
   root.innerHTML = `
   <section class="card">
@@ -1610,8 +1611,10 @@ async function mailLoad() {
       <div><label class="field-label">Remetente (pedidos)</label><input id="mFrom" class="control" style="width:100%" value="${esc(c.fromEmail || '')}" placeholder="orders@seudominio.com"></div>
       <div><label class="field-label">Nome do remetente</label><input id="mName" class="control" style="width:100%" value="${esc(c.fromName || '')}" placeholder="Sua Loja"></div>
       <div><label class="field-label">Suporte / responder para</label><input id="mReply" class="control" style="width:100%" value="${esc(c.replyTo || '')}" placeholder="help@seudominio.com"></div>
+      <div><label class="field-label">Logo da loja (URL da imagem)</label><input id="mLogo" class="control" style="width:100%" value="${esc(c.logoUrl || '')}" placeholder="https://.../logo.png"></div>
       <div><label class="field-label">Idioma padrão</label><select id="mLang" class="control" style="width:100%">${Object.entries(MAIL_LANGS).map(([v, l]) => `<option value="${v}" ${c.lang === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
     </div>
+    <p class="hint" style="margin-top:8px">A logo aparece na faixa escura do topo de todos os e-mails (PNG com fundo transparente fica melhor — na Shopify: Conteúdo → Arquivos → copie o link da imagem). Sem logo, mostramos o nome do remetente.</p>
     <div style="display:flex;align-items:center;gap:12px;margin-top:14px">
       <button class="control btn-primary" id="mSaveCfg">Salvar configuração</button>
       <span class="hint" style="margin:0" id="mCfgMsg"></span>
@@ -1662,7 +1665,7 @@ async function mailLoad() {
   $('mSaveCfg').addEventListener('click', async () => {
     $('mCfgMsg').textContent = 'Salvando…';
     try {
-      const body = { fromEmail: $('mFrom').value, fromName: $('mName').value, replyTo: $('mReply').value, lang: $('mLang').value };
+      const body = { fromEmail: $('mFrom').value, fromName: $('mName').value, replyTo: $('mReply').value, logoUrl: $('mLogo').value.trim(), lang: $('mLang').value };
       const k = $('mKey').value.trim();
       if (k) body.apiKey = k;
       const res = await fetch('/api/email/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -1729,7 +1732,15 @@ async function crmLoad() {
         <button class="control sm" id="crmCfg">Configurar automação</button>
       </div>
     </div>
-    <p class="hint">Recupera checkouts abandonados das lojas de checkout em <strong>4 e-mails</strong> (1h, 24h, 48h e 72h). Só entram checkouts <strong>identificados, com consentimento</strong> e sem compra posterior na janela de 7 dias.</p>
+    <p class="hint">Recupera checkouts abandonados das lojas de checkout em <strong>5 e-mails</strong> (1h, 24h, 48h, 72h e 96h): pedido guardado → esqueceu algo? → suporte → cupom 1 → cupom final. Só entram checkouts <strong>identificados, com consentimento</strong> e sem compra posterior na janela de 7 dias.</p>
+    <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;background:var(--surface-solid);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:12px">
+      <div><label class="field-label">Cupom do 4º e-mail (72h)</label><input id="crmC1" class="control" style="width:150px;text-transform:uppercase" maxlength="30" placeholder="ex.: VOLTA10" value="${esc((d.coupons && d.coupons.c1.code) || '')}"></div>
+      <div><label class="field-label">%</label><input id="crmC1p" class="control" style="width:64px" type="number" min="1" max="90" value="${(d.coupons && d.coupons.c1.pct) || 10}"></div>
+      <div><label class="field-label">Cupom final (96h)</label><input id="crmC2" class="control" style="width:150px;text-transform:uppercase" maxlength="30" placeholder="ex.: VOLTA15" value="${esc((d.coupons && d.coupons.c2.code) || '')}"></div>
+      <div><label class="field-label">%</label><input id="crmC2p" class="control" style="width:64px" type="number" min="1" max="90" value="${(d.coupons && d.coupons.c2.pct) || 15}"></div>
+      <button class="control btn-primary" id="crmCupSave">Salvar cupons</button>
+      <span class="hint" style="margin:0;flex:1;min-width:200px">Crie descontos com <strong>esses mesmos códigos</strong> na Shopify (loja de checkout) com validade automática. Sem código, os e-mails 4 e 5 saem sem cupom.</span>
+    </div>
     <div class="tiles" style="grid-template-columns:repeat(4,1fr)">
       <div class="tile"><div class="tile-label" style="margin-bottom:8px">E-mails enviados</div><div class="tile-value sm">${fmtInt(d.kpis.emailsEnviados)}</div></div>
       <div class="tile"><div class="tile-label" style="margin-bottom:8px">Checkouts abordados</div><div class="tile-value sm">${fmtInt(d.kpis.abordados)}</div></div>
@@ -1765,6 +1776,18 @@ async function crmLoad() {
   </section>`;
 
   $('crmCfg').addEventListener('click', () => document.querySelector('.tab-btn[data-tab="mail"]').click());
+  $('crmCupSave').addEventListener('click', async () => {
+    try {
+      const coupons = {
+        c1: { code: $('crmC1').value.trim().toUpperCase(), pct: Number($('crmC1p').value) || 10 },
+        c2: { code: $('crmC2').value.trim().toUpperCase(), pct: Number($('crmC2p').value) || 15 },
+      };
+      const res = await fetch('/api/email/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ coupons }) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+      showLojaToast('🛒 CRM', 'Cupons salvos — lembre de criar os mesmos códigos na Shopify.');
+    } catch (e) { showLojaToast('⚠ CRM', e.message); }
+  });
   $('crmRun').addEventListener('click', async () => {
     $('crmRun').disabled = true;
     $('crmRun').textContent = 'Enviando…';
