@@ -1712,9 +1712,37 @@ async function mailLoad() {
 
 /* ---------- CRM de recuperação ---------- */
 
+const CRM_STATUS_LBL = {
+  abandonado: ['Abandonado', 'st-pending'],
+  convertido: ['Convertido', 'st-paid'],
+  sem_email: ['Sem e-mail', 'st-other'],
+};
+
+function crmDelayLbl(min) {
+  if (!min && min !== 0) return '—';
+  if (min < 60) return `${min} min`;
+  if (min < 1440) return `${Math.round(min / 60)} h`;
+  return `${Math.round((min / 1440) * 10) / 10} d`;
+}
+
+function crmLeadsRows(leads, filtro) {
+  const list = leads.filter((l) => filtro === 'todos' ? true : l.status === filtro);
+  return list.map((l) => {
+    const [lbl, cls] = CRM_STATUS_LBL[l.status] || [l.status, 'st-other'];
+    return `<tr>
+      <td>${timeAgo(l.createdAt)}</td>
+      <td><strong style="font-size:12.5px">${esc(l.name || '—')}</strong><br><span class="hint" style="margin:0">${esc(l.email || 'sem e-mail')}</span></td>
+      <td>${esc(l.product || '—')}</td>
+      <td class="num">${(l.total || 0).toLocaleString('pt-BR', { style: 'currency', currency: l.currency || 'USD' })}</td>
+      <td>${l.etapas.map((on, i) => `<span class="status-badge ${on ? 'st-paid' : 'st-other'}" style="margin-right:3px">${i + 1}</span>`).join('')}</td>
+      <td><span class="status-badge ${cls}">${lbl}</span>${l.status === 'abandonado' && !l.consent ? ' <span class="hint" style="margin:0">sem consentimento</span>' : ''}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" class="sc-empty">Nenhum lead encontrado.</td></tr>';
+}
+
 async function crmLoad() {
   const root = $('crmRoot');
-  root.innerHTML = '<div class="placeholder-empty"><span class="pe-ico">🛒</span><div class="pe-title">Carregando…</div><div>Buscando checkouts abandonados.</div></div>';
+  root.innerHTML = '<div class="placeholder-empty"><span class="pe-ico">🛒</span><div class="pe-title">Carregando…</div><div>Buscando leads e checkouts abandonados.</div></div>';
   let d;
   try { d = await api('/api/crm'); } catch (e) {
     root.innerHTML = `<div class="placeholder-empty"><span class="pe-ico">⚠️</span><div class="pe-title">Erro</div><div>${esc(e.message)}</div></div>`;
@@ -1722,48 +1750,60 @@ async function crmLoad() {
   }
   const statusBadgeCrm = d.enabled && d.ready
     ? '<span class="status-badge st-paid">● Automação ativa · envio real</span>'
-    : `<span class="status-badge st-pending">● ${!d.ready ? 'Resend pendente' : 'Automação desativada'}</span>`;
+    : `<span class="status-badge st-pending">● ${!d.ready ? 'Resend pendente' : 'Recuperação desativada'}</span>`;
+  const K = d.kpis;
   root.innerHTML = `
   <section class="card">
     <div class="card-head">
-      <h2>CRM de recuperação</h2>
+      <div><h2>Recuperação</h2><span class="card-sub">Leads, automação e e-mails de recuperação</span></div>
       <div style="display:flex;gap:8px;align-items:center">${statusBadgeCrm}
-        <button class="control sm" id="crmRun" ${d.enabled && d.ready ? '' : 'disabled title="Ligue a automação na aba E-mails"'}>✉ Correr agora</button>
-        <button class="control sm" id="crmCfg">Configurar automação</button>
+        <button class="control sm" id="crmSim">🔍 Simular</button>
+        <button class="control sm btn-primary" id="crmRun" ${d.enabled && d.ready ? '' : 'disabled title="Ative a recuperação abaixo (e o Resend na aba E-mails)"'}>✉ Correr agora</button>
       </div>
     </div>
-    <p class="hint">Recupera checkouts abandonados das lojas de checkout em <strong>5 e-mails</strong> (1h, 24h, 48h, 72h e 96h): pedido guardado → esqueceu algo? → suporte → cupom 1 → cupom final. Só entram checkouts <strong>identificados, com consentimento</strong> e sem compra posterior na janela de 7 dias.</p>
-    <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap;background:var(--surface-solid);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:12px">
-      <div><label class="field-label">Cupom do 4º e-mail (72h)</label><input id="crmC1" class="control" style="width:150px;text-transform:uppercase" maxlength="30" placeholder="ex.: VOLTA10" value="${esc((d.coupons && d.coupons.c1.code) || '')}"></div>
-      <div><label class="field-label">%</label><input id="crmC1p" class="control" style="width:64px" type="number" min="1" max="90" value="${(d.coupons && d.coupons.c1.pct) || 10}"></div>
-      <div><label class="field-label">Cupom final (96h)</label><input id="crmC2" class="control" style="width:150px;text-transform:uppercase" maxlength="30" placeholder="ex.: VOLTA15" value="${esc((d.coupons && d.coupons.c2.code) || '')}"></div>
-      <div><label class="field-label">%</label><input id="crmC2p" class="control" style="width:64px" type="number" min="1" max="90" value="${(d.coupons && d.coupons.c2.pct) || 15}"></div>
-      <button class="control btn-primary" id="crmCupSave">Salvar cupons</button>
-      <span class="hint" style="margin:0;flex:1;min-width:200px">Crie descontos com <strong>esses mesmos códigos</strong> na Shopify (loja de checkout) com validade automática. Sem código, os e-mails 4 e 5 saem sem cupom.</span>
+    <div class="tiles" style="grid-template-columns:repeat(3,1fr)">
+      <div class="tile"><div class="tile-label" style="margin-bottom:8px">Leads</div><div class="tile-value sm">${fmtInt(K.leads)}</div><div class="hint" style="margin:4px 0 0">checkouts na janela de 7 dias</div></div>
+      <div class="tile"><div class="tile-label" style="margin-bottom:8px">Abandonados</div><div class="tile-value sm">${fmtInt(K.abandonados)}</div><div class="hint" style="margin:4px 0 0">com e-mail, sem pagar</div></div>
+      <div class="tile"><div class="tile-label" style="margin-bottom:8px">Convertidos</div><div class="tile-value sm">${fmtInt(K.convertidos)}</div><div class="hint" style="margin:4px 0 0">viraram venda</div></div>
+      <div class="tile"><div class="tile-label" style="margin-bottom:8px">E-mails</div><div class="tile-value sm">${fmtInt(K.emailsEnviados)}</div><div class="hint" style="margin:4px 0 0">de recuperação enviados</div></div>
+      <div class="tile"><div class="tile-label" style="margin-bottom:8px">Taxa</div><div class="tile-value sm">${K.taxa}%</div><div class="hint" style="margin:4px 0 0">recuperação (dos abordados)</div></div>
+      <div class="tile"><div class="tile-label" style="margin-bottom:8px">Receita recuperada</div><div class="tile-value sm">${K.receitaRecuperada ? fmtMoney(K.receitaRecuperada) : '—'}</div><div class="hint" style="margin:4px 0 0">de leads que receberam e-mail</div></div>
     </div>
-    <div class="tiles" style="grid-template-columns:repeat(4,1fr)">
-      <div class="tile"><div class="tile-label" style="margin-bottom:8px">E-mails enviados</div><div class="tile-value sm">${fmtInt(d.kpis.emailsEnviados)}</div></div>
-      <div class="tile"><div class="tile-label" style="margin-bottom:8px">Checkouts abordados</div><div class="tile-value sm">${fmtInt(d.kpis.abordados)}</div></div>
-      <div class="tile"><div class="tile-label" style="margin-bottom:8px">Recuperados</div><div class="tile-value sm">${fmtInt(d.kpis.recuperados)}</div></div>
-      <div class="tile"><div class="tile-label" style="margin-bottom:8px">Receita recuperada</div><div class="tile-value sm">${d.kpis.receitaRecuperada ? fmtMoney(d.kpis.receitaRecuperada) : '—'}</div></div>
+    <p class="hint" style="margin-top:12px">O cron roda sozinho a cada 5 minutos. <strong>Simular</strong> mostra o que sairia agora <strong>sem enviar nada</strong>.</p>
+    <div id="crmSimOut" hidden style="background:var(--surface-solid);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-top:8px"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Configuração da sequência</h2><span class="card-sub">5 e-mails: guardado → esqueceu? → suporte → cupom 1 → cupom final</span></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+      <div><label class="field-label">Recuperação ativa</label><select id="crmAtiva" class="control" style="width:100%"><option value="1" ${d.enabled ? 'selected' : ''}>Sim</option><option value="0" ${d.enabled ? '' : 'selected'}>Não</option></select></div>
+      <div><label class="field-label">Atrasos dos 5 e-mails (minutos)</label><input id="crmDelays" class="control" style="width:100%" value="${esc((d.crmCfg.delaysMin || []).join(','))}" placeholder="60,1440,2880,4320,5760"></div>
+      <div><label class="field-label">Dias de garantia</label><input id="crmGar" class="control" style="width:100%" type="number" min="0" max="365" value="${d.crmCfg.guaranteeDays || ''}" placeholder="ex.: 7"></div>
+      <div><label class="field-label">Prova social</label><input id="crmSocial" class="control" style="width:100%" maxlength="80" value="${esc(d.crmCfg.socialProof || '')}" placeholder="ex.: +1.200 clientes atendidos"></div>
+      <div><label class="field-label">Cupom do e-mail 4</label><div style="display:flex;gap:8px"><input id="crmC1" class="control" style="flex:1;text-transform:uppercase" maxlength="30" placeholder="ex.: VOLTA10" value="${esc((d.coupons && d.coupons.c1.code) || '')}"><input id="crmC1p" class="control" style="width:64px" type="number" min="1" max="90" value="${(d.coupons && d.coupons.c1.pct) || 10}" title="%"></div></div>
+      <div><label class="field-label">Cupom do e-mail 5 (final)</label><div style="display:flex;gap:8px"><input id="crmC2" class="control" style="flex:1;text-transform:uppercase" maxlength="30" placeholder="ex.: VOLTA15" value="${esc((d.coupons && d.coupons.c2.code) || '')}"><input id="crmC2p" class="control" style="width:64px" type="number" min="1" max="90" value="${(d.coupons && d.coupons.c2.pct) || 15}" title="%"></div></div>
     </div>
-    <div class="table-scroll" style="margin-top:12px"><table class="data-table"><thead><tr><th>Etapa</th><th>Intervalo</th><th>Tema</th><th class="num">Enviados</th></tr></thead><tbody>
-      ${d.stages.map((s, i) => `<tr><td>${i + 1}</td><td>${s.horas} h depois</td><td>${esc(s.nome)}</td><td class="num">${fmtInt(s.enviados)}</td></tr>`).join('')}
+    <p class="hint" style="margin-top:10px">Crie descontos com <strong>esses mesmos códigos</strong> na Shopify (loja de checkout). Garantia e prova social só aparecem nos e-mails 3 e 2 se preenchidos — <strong>não invente números</strong>. Pra ativar, a trava anti-duplicação precisa estar confirmada na aba E-mails.</p>
+    <div style="display:flex;align-items:center;gap:12px;margin-top:10px">
+      <button class="control btn-primary" id="crmCfgSave">Salvar</button>
+      <span class="hint" style="margin:0" id="crmCfgMsg"></span>
+    </div>
+    <div class="table-scroll" style="margin-top:14px"><table class="data-table"><thead><tr><th>Etapa</th><th>Atraso</th><th>Tema</th><th class="num">Enviados</th></tr></thead><tbody>
+      ${d.stages.map((s, i) => `<tr><td>${i + 1}</td><td>${crmDelayLbl(s.delayMin)} depois</td><td>${esc(s.nome)}</td><td class="num">${fmtInt(s.enviados)}</td></tr>`).join('')}
     </tbody></table></div>
   </section>
 
   <section class="card">
-    <div class="card-head"><h2>Checkouts elegíveis</h2><span class="card-sub">${fmtInt(d.eligible.length)} registrado${d.eligible.length === 1 ? '' : 's'}</span></div>
+    <div class="card-head"><h2>Leads</h2><span class="card-sub">${fmtInt(d.leads.length)} checkout${d.leads.length === 1 ? '' : 's'} na janela de 7 dias</span></div>
     ${(d.erros || []).map((e2) => `<p class="hint" style="color:var(--warn)">⚠ ${esc(e2)}</p>`).join('')}
-    <div class="table-scroll"><table class="data-table"><thead><tr><th>Loja</th><th>E-mail</th><th>País/idioma</th><th class="num">Valor</th><th>Criado</th><th>Sequência</th></tr></thead><tbody>
-      ${d.eligible.map((ck) => `<tr>
-        <td>${esc(ck.storeName)}</td>
-        <td>${esc(ck.email)}</td>
-        <td>${esc(ck.locale || '—')}</td>
-        <td class="num">${(ck.total).toLocaleString('pt-BR', { style: 'currency', currency: ck.currency || 'USD' })}</td>
-        <td>${timeAgo(ck.createdAt)}</td>
-        <td>${ck.etapas.map((on, i) => `<span class="status-badge ${on ? 'st-paid' : 'st-other'}" style="margin-right:3px">${i + 1}</span>`).join('')}</td>
-      </tr>`).join('') || '<tr><td colspan="6" class="sc-empty">Nenhum checkout abandonado elegível no momento.</td></tr>'}
+    <div class="segmented" style="margin-bottom:12px">
+      <button class="seg-btn active" data-crmf="abandonado">Abandonados</button>
+      <button class="seg-btn" data-crmf="convertido">Convertidos</button>
+      <button class="seg-btn" data-crmf="sem_email">Sem e-mail</button>
+      <button class="seg-btn" data-crmf="todos">Todos</button>
+    </div>
+    <div class="table-scroll"><table class="data-table"><thead><tr><th>Data</th><th>Cliente</th><th>Produto</th><th class="num">Valor</th><th>Sequência</th><th>Status</th></tr></thead><tbody id="crmLeadsRows">
+      ${crmLeadsRows(d.leads, 'abandonado')}
     </tbody></table></div>
   </section>
 
@@ -1775,19 +1815,50 @@ async function crmLoad() {
     </tbody></table></div>
   </section>`;
 
-  $('crmCfg').addEventListener('click', () => document.querySelector('.tab-btn[data-tab="mail"]').click());
-  $('crmCupSave').addEventListener('click', async () => {
+  // filtros da lista de leads
+  root.querySelectorAll('[data-crmf]').forEach((b) => b.addEventListener('click', () => {
+    root.querySelectorAll('[data-crmf]').forEach((x) => x.classList.toggle('active', x === b));
+    $('crmLeadsRows').innerHTML = crmLeadsRows(d.leads, b.dataset.crmf);
+  }));
+
+  $('crmCfgSave').addEventListener('click', async () => {
+    $('crmCfgMsg').textContent = 'Salvando…';
     try {
-      const coupons = {
-        c1: { code: $('crmC1').value.trim().toUpperCase(), pct: Number($('crmC1p').value) || 10 },
-        c2: { code: $('crmC2').value.trim().toUpperCase(), pct: Number($('crmC2p').value) || 15 },
+      const delays = $('crmDelays').value.split(',').map((v) => parseInt(v.trim(), 10)).filter((v) => !isNaN(v));
+      const body = {
+        automations: { abandoned: $('crmAtiva').value === '1' },
+        antiDup: d.antiDup,
+        crm: { delaysMin: delays, guaranteeDays: Number($('crmGar').value) || 0, socialProof: $('crmSocial').value.trim() },
+        coupons: {
+          c1: { code: $('crmC1').value.trim().toUpperCase(), pct: Number($('crmC1p').value) || 10 },
+          c2: { code: $('crmC2').value.trim().toUpperCase(), pct: Number($('crmC2p').value) || 15 },
+        },
       };
-      const res = await fetch('/api/email/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ coupons }) });
+      const res = await fetch('/api/email/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
-      showLojaToast('🛒 CRM', 'Cupons salvos — lembre de criar os mesmos códigos na Shopify.');
-    } catch (e) { showLojaToast('⚠ CRM', e.message); }
+      showLojaToast('🛒 Recuperação', 'Configuração da sequência salva.');
+      crmLoad();
+    } catch (e) { $('crmCfgMsg').textContent = e.message; }
   });
+
+  $('crmSim').addEventListener('click', async () => {
+    const out = $('crmSimOut');
+    out.hidden = false;
+    out.innerHTML = '<span class="hint" style="margin:0">Simulando…</span>';
+    try {
+      const res = await fetch('/api/crm/simulate', { method: 'POST' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
+      out.innerHTML = j.sairia.length
+        ? `<strong style="font-size:13px">${fmtInt(j.sairia.length)} e-mail(s) sairiam agora${j.ativa ? '' : ' (recuperação DESATIVADA — nada será enviado pelo cron)'}:</strong>
+           <div class="table-scroll" style="margin-top:8px"><table class="data-table"><thead><tr><th>E-mail</th><th>Etapa</th><th>Tema</th><th>Produto</th><th>Loja</th></tr></thead><tbody>
+           ${j.sairia.map((s) => `<tr><td>${esc(s.email)}</td><td>${s.etapa}</td><td>${esc(s.tema)}</td><td>${esc(s.produto || '—')}</td><td>${esc(s.loja)}</td></tr>`).join('')}
+           </tbody></table></div>`
+        : '<strong style="font-size:13px">Nada sairia agora.</strong> <span class="hint" style="margin:0">Nenhum lead elegível atingiu a próxima etapa da sequência.</span>';
+    } catch (e) { out.innerHTML = `<span class="hint" style="margin:0;color:var(--warn)">⚠ ${esc(e.message)}</span>`; }
+  });
+
   $('crmRun').addEventListener('click', async () => {
     $('crmRun').disabled = true;
     $('crmRun').textContent = 'Enviando…';
@@ -1795,9 +1866,9 @@ async function crmLoad() {
       const res = await fetch('/api/crm/run', { method: 'POST' });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || `Erro ${res.status}`);
-      showLojaToast('🛒 CRM', j.skipped ? j.reason : `${fmtInt(j.enviados || 0)} e-mail(s) de recuperação enviados.`);
+      showLojaToast('🛒 Recuperação', j.skipped ? j.reason : `${fmtInt(j.enviados || 0)} e-mail(s) de recuperação enviados.`);
       crmLoad();
-    } catch (e) { showLojaToast('⚠ CRM', e.message); crmLoad(); }
+    } catch (e) { showLojaToast('⚠ Recuperação', e.message); crmLoad(); }
   });
 }
 
@@ -1934,7 +2005,7 @@ const TOUR_STEPS = [
   { target: '.tab-btn[data-tab="command"]', title: 'Ao vivo', text: 'Globo 3D ⇄ mapa com visitantes e pedidos em tempo real (estilo Shopify Live View), alertas e saúde por loja.' },
   { target: '.tab-btn[data-tab="ship"]', title: 'Rastreio', text: 'Gere um código de rastreio próprio pra cada pedido pago. O cliente acompanha num portal público com linha do tempo que se revela aos poucos — e você ainda registra o código real da transportadora quando chegar.' },
   { target: '.tab-btn[data-tab="mail"]', title: 'E-mails', text: 'Conecte o Resend e ligue as automações: confirmação de pedido, pagamento aprovado, rastreio e atualizações de entrega — em 4 idiomas, com pré-visualização e teste.' },
-  { target: '.tab-btn[data-tab="crm"]', title: 'CRM de recuperação', text: 'Checkouts abandonados viram vendas: sequência automática de 4 e-mails (1h, 24h, 48h e 72h), só pra quem deu consentimento, com KPIs de receita recuperada.' },
+  { target: '.tab-btn[data-tab="crm"]', title: 'Recuperação', text: 'Checkouts abandonados viram vendas: sequência automática de 5 e-mails (com cupons de desconto), só pra quem deu consentimento, com simulação e KPIs de receita recuperada.' },
   { target: '.tab-btn[data-tab="inbox"]', title: 'Suporte', text: 'Caixa de entrada das conversas com clientes, com o contexto dos pedidos deles ao lado. Responda direto daqui — o e-mail sai de verdade.' },
   { target: '.tab-btn[data-tab="fin"]', title: 'Financeiro', text: 'Custos de produto e gateway, períodos de gastos com anúncios, payouts do Shopify Payments por loja e a fila de processamento com retry.' },
   { target: '#manageBtn', title: 'Gerenciar lojas & contas', text: 'Adicione/remova lojas e crie contas separadas — cada login tem um ambiente totalmente isolado, com código de convite pra sua equipe se cadastrar.' },

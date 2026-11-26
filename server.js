@@ -2574,6 +2574,12 @@ const EMAILCFG_DEFAULTS = {
   antiDup: false,        // "conferi o que a Shopify ainda envia" (trava anti-duplicação)
   // cupons da recuperação (crie códigos iguais na Shopify): c1 = 4º e-mail, c2 = 5º (final)
   coupons: { c1: { code: '', pct: 10 }, c2: { code: '', pct: 15 } },
+  // sequência de recuperação: atrasos em minutos dos 5 e-mails + extras honestos
+  crm: {
+    delaysMin: [60, 1440, 2880, 4320, 5760], // 1h, 24h, 48h, 72h, 96h
+    guaranteeDays: 0,   // "garantia de X dias" — só aparece no e-mail 3 se > 0
+    socialProof: '',    // ex.: "+1.200 clientes atendidos" — só aparece no e-mail 2 se preenchido
+  },
 };
 
 async function loadEmailCfg() {
@@ -2584,6 +2590,8 @@ async function loadEmailCfg() {
     c1: { ...EMAILCFG_DEFAULTS.coupons.c1, ...((raw.coupons || {}).c1 || {}) },
     c2: { ...EMAILCFG_DEFAULTS.coupons.c2, ...((raw.coupons || {}).c2 || {}) },
   };
+  raw.crm = { ...EMAILCFG_DEFAULTS.crm, ...(raw.crm || {}) };
+  if (!Array.isArray(raw.crm.delaysMin) || raw.crm.delaysMin.length !== 5) raw.crm.delaysMin = [...EMAILCFG_DEFAULTS.crm.delaysMin];
   return raw;
 }
 
@@ -2613,8 +2621,8 @@ const MAIL_I18N = {
       paras: () => ['We saw you started your order of {p} but did not get to finish it. No worries: we saved everything just the way you left it.', 'Only one step left. Click below and pick up exactly where you were — no need to fill anything in again.', 'If you had any trouble with the payment or the page, reply to this email and we will help you right away.'],
       cta: () => 'Complete my order',
     },
-    abandoned_2: { lead: 'Forgot something? 🛒', s: () => 'Forgot something? 🛒', paras: () => ['Your order of {p} is still waiting for you. Complete it now before it sells out.'], cta: () => 'Complete my order' },
-    abandoned_3: { lead: 'Questions? We are here to help 💬', s: () => 'Questions? We are here to help', paras: () => ['If you had any problem completing your purchase of {p}, just reply to this email. Our team answers within minutes.'], cta: () => 'Complete my order' },
+    abandoned_2: { lead: 'Forgot something? 🛒', s: () => 'Forgot something? 🛒', paras: (d) => ['Your order of {p} is still waiting for you. Complete it now before it sells out.'].concat(d.social ? [`You are in good company: ${d.social}.`] : []), cta: () => 'Complete my order' },
+    abandoned_3: { lead: 'Questions? We are here to help 💬', s: () => 'Questions? We are here to help', paras: (d) => ['If you had any problem completing your purchase of {p}, just reply to this email. Our team answers within minutes.'].concat(d.guarantee ? [`And your purchase is protected: ${d.guarantee}-day guarantee.`] : []), cta: () => 'Complete my order' },
     abandoned_4: {
       s: (d) => d && d.coupon ? `${d.coupon.pct}% off your order — today only` : 'Your cart expires soon',
       paras: (d) => d.coupon
@@ -2648,8 +2656,8 @@ const MAIL_I18N = {
       paras: () => ['Vimos que você começou seu pedido de {p}, mas não chegou a concluir. Tranquilo: guardamos tudo do jeitinho que você deixou.', 'Só falta um passo. Clique abaixo e retome exatamente de onde parou — não precisa preencher nada de novo.', 'Se teve qualquer problema com o pagamento ou com a página, responda este e-mail que te ajudamos na hora.'],
       cta: () => 'Completar meu pedido',
     },
-    abandoned_2: { lead: 'Esqueceu algo? 🛒', s: () => 'Esqueceu algo? 🛒', paras: () => ['Seu pedido de {p} ainda está te esperando. Conclua agora antes que esgote.'], cta: () => 'Completar meu pedido' },
-    abandoned_3: { lead: 'Dúvidas? Estamos aqui pra ajudar 💬', s: () => 'Dúvidas? Estamos aqui pra ajudar', paras: () => ['Se você teve algum problema ao concluir sua compra de {p}, é só responder este e-mail. Nossa equipe responde em minutos.'], cta: () => 'Completar meu pedido' },
+    abandoned_2: { lead: 'Esqueceu algo? 🛒', s: () => 'Esqueceu algo? 🛒', paras: (d) => ['Seu pedido de {p} ainda está te esperando. Conclua agora antes que esgote.'].concat(d.social ? [`Você está em boa companhia: ${d.social}.`] : []), cta: () => 'Completar meu pedido' },
+    abandoned_3: { lead: 'Dúvidas? Estamos aqui pra ajudar 💬', s: () => 'Dúvidas? Estamos aqui pra ajudar', paras: (d) => ['Se você teve algum problema ao concluir sua compra de {p}, é só responder este e-mail. Nossa equipe responde em minutos.'].concat(d.guarantee ? [`E você compra protegido: garantia de ${d.guarantee} dias.`] : []), cta: () => 'Completar meu pedido' },
     abandoned_4: {
       s: (d) => d && d.coupon ? `${d.coupon.pct}% de desconto no seu pedido — só hoje` : 'Seu carrinho expira em breve',
       paras: (d) => d.coupon
@@ -2683,8 +2691,8 @@ const MAIL_I18N = {
       paras: () => ['Vimos que empezaste tu pedido de {p} pero no llegaste a completarlo. Tranquilo: guardamos todo tal como lo dejaste.', 'Solo te falta un paso. Haz clic abajo y retoma exactamente donde estabas — no hace falta cargar nada de nuevo.', 'Si tuviste algún problema con el pago o la página, responde este correo y te ayudamos al instante.'],
       cta: () => 'Completar mi pedido',
     },
-    abandoned_2: { lead: '¿Olvidaste algo? 🛒', s: () => '¿Olvidaste algo? 🛒', paras: () => ['Tu pedido de {p} todavía te está esperando. Complétalo ahora antes de que se agote.'], cta: () => 'Completar mi pedido' },
-    abandoned_3: { lead: '¿Tienes dudas? Estamos para ayudarte 💬', s: () => '¿Tienes dudas? Estamos para ayudarte', paras: () => ['Si tuviste algún problema al completar tu compra de {p}, responde este correo. Nuestro equipo te responde en minutos.'], cta: () => 'Completar mi pedido' },
+    abandoned_2: { lead: '¿Olvidaste algo? 🛒', s: () => '¿Olvidaste algo? 🛒', paras: (d) => ['Tu pedido de {p} todavía te está esperando. Complétalo ahora antes de que se agote.'].concat(d.social ? [`Estás en buena compañía: ${d.social}.`] : []), cta: () => 'Completar mi pedido' },
+    abandoned_3: { lead: '¿Tienes dudas? Estamos para ayudarte 💬', s: () => '¿Tienes dudas? Estamos para ayudarte', paras: (d) => ['Si tuviste algún problema al completar tu compra de {p}, responde este correo. Nuestro equipo te responde en minutos.'].concat(d.guarantee ? [`Y compras protegido: garantía de ${d.guarantee} días.`] : []), cta: () => 'Completar mi pedido' },
     abandoned_4: {
       s: (d) => d && d.coupon ? `${d.coupon.pct}% de descuento en tu pedido — solo hoy` : 'Tu carrito expira pronto',
       paras: (d) => d.coupon
@@ -2718,8 +2726,8 @@ const MAIL_I18N = {
       paras: () => ['Wir haben gesehen, dass Sie Ihre Bestellung von {p} begonnen, aber nicht abgeschlossen haben. Keine Sorge: Wir haben alles genau so gespeichert, wie Sie es verlassen haben.', 'Es fehlt nur noch ein Schritt. Klicken Sie unten und machen Sie genau dort weiter — Sie müssen nichts erneut eingeben.', 'Falls es ein Problem mit der Zahlung oder der Seite gab, antworten Sie auf diese E-Mail und wir helfen sofort.'],
       cta: () => 'Bestellung abschließen',
     },
-    abandoned_2: { lead: 'Etwas vergessen? 🛒', s: () => 'Etwas vergessen? 🛒', paras: () => ['Ihre Bestellung von {p} wartet noch auf Sie. Schließen Sie sie ab, bevor sie ausverkauft ist.'], cta: () => 'Bestellung abschließen' },
-    abandoned_3: { lead: 'Fragen? Wir helfen gern 💬', s: () => 'Fragen? Wir helfen gern', paras: () => ['Falls es beim Abschluss Ihres Kaufs von {p} ein Problem gab, antworten Sie einfach auf diese E-Mail. Unser Team antwortet in Minuten.'], cta: () => 'Bestellung abschließen' },
+    abandoned_2: { lead: 'Etwas vergessen? 🛒', s: () => 'Etwas vergessen? 🛒', paras: (d) => ['Ihre Bestellung von {p} wartet noch auf Sie. Schließen Sie sie ab, bevor sie ausverkauft ist.'].concat(d.social ? [`Sie sind in guter Gesellschaft: ${d.social}.`] : []), cta: () => 'Bestellung abschließen' },
+    abandoned_3: { lead: 'Fragen? Wir helfen gern 💬', s: () => 'Fragen? Wir helfen gern', paras: (d) => ['Falls es beim Abschluss Ihres Kaufs von {p} ein Problem gab, antworten Sie einfach auf diese E-Mail. Unser Team antwortet in Minuten.'].concat(d.guarantee ? [`Und Sie kaufen geschützt: ${d.guarantee} Tage Garantie.`] : []), cta: () => 'Bestellung abschließen' },
     abandoned_4: {
       s: (d) => d && d.coupon ? `${d.coupon.pct}% Rabatt auf Ihre Bestellung — nur heute` : 'Ihr Warenkorb läuft bald ab',
       paras: (d) => d.coupon
@@ -2937,6 +2945,18 @@ app.put('/api/email/config', async (req, res) => {
         if (pct >= 1 && pct <= 90) c.coupons[k].pct = pct;
       }
     }
+    if (b.crm && typeof b.crm === 'object') {
+      if (Array.isArray(b.crm.delaysMin)) {
+        const ds = b.crm.delaysMin.map((v) => parseInt(v, 10)).filter((v) => v >= 5 && v <= 60 * 24 * 14);
+        if (ds.length === 5) c.crm.delaysMin = ds;
+        else return res.status(400).json({ error: 'Informe 5 atrasos em minutos (entre 5 min e 14 dias), separados por vírgula.' });
+      }
+      if (b.crm.guaranteeDays != null) {
+        const g = parseInt(b.crm.guaranteeDays, 10);
+        c.crm.guaranteeDays = g >= 1 && g <= 365 ? g : 0;
+      }
+      if (typeof b.crm.socialProof === 'string') c.crm.socialProof = b.crm.socialProof.trim().slice(0, 80);
+    }
     await saveEmailCfg(c);
     res.json({ ok: true, ready: emailReady(c) });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2958,6 +2978,8 @@ function mailSampleFor(cfg, type) {
   const d = { ...MAIL_SAMPLE };
   if (type === 'abandoned_4') d.coupon = cfg.coupons.c1.code ? cfg.coupons.c1 : { code: 'CUPOM10', pct: cfg.coupons.c1.pct || 10 };
   if (type === 'abandoned_5') d.coupon = cfg.coupons.c2.code ? cfg.coupons.c2 : { code: 'CUPOM15', pct: cfg.coupons.c2.pct || 15 };
+  d.social = (cfg.crm && cfg.crm.socialProof) || null;
+  d.guarantee = (cfg.crm && cfg.crm.guaranteeDays) || null;
   return d;
 }
 
@@ -3126,7 +3148,8 @@ async function fetchAbandoned(store, sinceDays = 7) {
   }));
 }
 
-// elegíveis + estado da sequência (consentimento, janela 7d, sem compra posterior)
+// leads (todos os checkouts) + elegíveis + estado da sequência
+// elegível = com e-mail, consentimento, URL e sem compra posterior (janela 7d)
 async function crmSnapshot() {
   const c = await loadEmailCfg();
   const crm = (await db.readDoc('crm', { sent: {} })) || { sent: {} };
@@ -3134,9 +3157,10 @@ async function crmSnapshot() {
   let ctx;
   try { ctx = await ensureFlowConfig(); } catch { ctx = { pool: [] }; }
   let eligible = [];
+  const leads = [];
   const erros = [];
   if (ctx.pool.length) {
-    // e-mails que JÁ compraram nos últimos 7 dias (anti-duplicação)
+    // e-mails que JÁ compraram nos últimos 7 dias (anti-duplicação + conversão)
     let compradores = new Set();
     let pedidos = [];
     try {
@@ -3149,9 +3173,11 @@ async function crmSnapshot() {
       try {
         const cks = await cached(`crmck:${store.id}`, 60000, () => fetchAbandoned(store));
         for (const ck of cks) {
-          if (!ck.email || !ck.consent || !ck.url) continue;
-          if (compradores.has(ck.email.toLowerCase())) continue;
-          eligible.push({ ...ck, stages: crm.sent[ck.id] || {} });
+          const comprou = !!(ck.email && compradores.has(ck.email.toLowerCase()));
+          const status = !ck.email ? 'sem_email' : (comprou ? 'convertido' : 'abandonado');
+          const lead = { ...ck, status, stages: crm.sent[ck.id] || {} };
+          leads.push(lead);
+          if (status === 'abandonado' && ck.consent && ck.url) eligible.push(lead);
         }
       } catch (e) {
         const falta = /403|forbidden|scope/i.test(String(e.message));
@@ -3165,7 +3191,7 @@ async function crmSnapshot() {
       const byEmail = {};
       for (const o of pedidos) if (o.email) (byEmail[o.email.toLowerCase()] = byEmail[o.email.toLowerCase()] || []).push(o);
       for (const [ckId, stages] of Object.entries(crm.sent)) {
-        const first = Math.min(...Object.values(stages));
+        const first = Math.min(...Object.values(stages).filter((v) => typeof v === 'number'));
         const em = (stages._email || '').toLowerCase();
         for (const o of byEmail[em] || []) {
           if (o.createdAt.getTime() > first) { recuperados.push({ email: em, number: o.number, total: o.total, currency: o.currency, at: o.createdAt }); break; }
@@ -3173,13 +3199,31 @@ async function crmSnapshot() {
       }
     }
   }
+  leads.sort((x, y) => String(y.createdAt).localeCompare(String(x.createdAt)));
   eligible.sort((x, y) => String(y.createdAt).localeCompare(String(x.createdAt)));
-  return { cfg: c, crm, eligible: eligible.slice(0, 200), recuperados: recuperados || [], erros };
+  return { cfg: c, crm, leads: leads.slice(0, 400), eligible: eligible.slice(0, 200), recuperados: recuperados || [], erros };
+}
+
+// e-mails da sequência que estão "vencidos" agora (usado pelo ciclo e pela simulação)
+function crmDue(cfg, crm, eligible) {
+  const due = [];
+  for (const ck of eligible) {
+    const min = (Date.now() - new Date(ck.createdAt).getTime()) / 60000;
+    const stages = crm.sent[ck.id] || {};
+    for (let i = 0; i < CRM_STAGES.length; i++) {
+      const st = CRM_STAGES[i];
+      const delay = cfg.crm.delaysMin[i] || 0;
+      if (stages[st.k] || min < delay) continue;
+      due.push({ ck, st, idx: i });
+      break; // uma etapa por ciclo por checkout
+    }
+  }
+  return due;
 }
 
 app.get('/api/crm', async (req, res) => {
   try {
-    const { cfg, crm, eligible, recuperados, erros } = await crmSnapshot();
+    const { cfg, crm, leads, eligible, recuperados, erros } = await crmSnapshot();
     const porEtapa = Object.fromEntries(CRM_STAGES.map((s) => [s.k, 0]));
     let abordados = 0;
     for (const stages of Object.values(crm.sent)) {
@@ -3187,23 +3231,49 @@ app.get('/api/crm', async (req, res) => {
       for (const st of CRM_STAGES) if (stages[st.k]) { porEtapa[st.k]++; any = true; }
       if (any) abordados++;
     }
+    const abandonados = leads.filter((l) => l.status === 'abandonado').length;
+    const convertidos = leads.filter((l) => l.status === 'convertido').length;
     res.json({
       enabled: !!cfg.automations.abandoned,
       ready: emailReady(cfg),
+      antiDup: !!cfg.antiDup,
       coupons: cfg.coupons,
-      stages: CRM_STAGES.map((s) => ({ ...s, enviados: porEtapa[s.k] })),
+      crmCfg: cfg.crm,
+      stages: CRM_STAGES.map((s, i) => ({ ...s, delayMin: cfg.crm.delaysMin[i], enviados: porEtapa[s.k] })),
       kpis: {
+        leads: leads.length,
+        abandonados,
+        convertidos,
         emailsEnviados: Object.values(porEtapa).reduce((a, b) => a + b, 0),
         abordados,
         recuperados: recuperados.length,
+        taxa: abordados ? Math.round((recuperados.length / abordados) * 100) : 0,
         receitaRecuperada: recuperados.reduce((s, r) => s + (r.total || 0), 0),
       },
-      eligible: eligible.map((e2) => ({
-        id: e2.id, storeName: e2.storeName, email: e2.email, locale: e2.locale,
-        total: e2.total, currency: e2.currency, createdAt: e2.createdAt,
-        etapas: CRM_STAGES.map((s) => !!(e2.stages && e2.stages[s.k])),
+      leads: leads.map((l) => ({
+        id: l.id, storeName: l.storeName, email: l.email, name: l.name, product: l.product,
+        locale: l.locale, total: l.total, currency: l.currency, createdAt: l.createdAt,
+        status: l.status, consent: l.consent,
+        etapas: CRM_STAGES.map((s) => !!(l.stages && l.stages[s.k])),
       })),
       recuperados, erros,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// simulação: mostra o que sairia agora, sem enviar nada
+app.post('/api/crm/simulate', async (req, res) => {
+  try {
+    const { cfg, crm, eligible } = await crmSnapshot();
+    const due = crmDue(cfg, crm, eligible).slice(0, 50);
+    res.json({
+      ok: true,
+      ativa: !!cfg.automations.abandoned,
+      ready: emailReady(cfg),
+      sairia: due.map(({ ck, st, idx }) => ({
+        email: ck.email, etapa: idx + 1, tema: st.nome, tipo: st.tipo,
+        produto: ck.product, loja: ck.storeName,
+      })),
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -3214,28 +3284,24 @@ async function runCrmCycle() {
   if (!emailReady(cfg)) return { skipped: true, reason: 'Resend não configurado.' };
   let enviados = 0;
   const erros = [];
-  for (const ck of eligible) {
+  for (const { ck, st } of crmDue(cfg, crm, eligible)) {
     if (enviados >= 20) break;
-    const horas = (Date.now() - new Date(ck.createdAt).getTime()) / 3600000;
     const stages = crm.sent[ck.id] || {};
-    for (const st of CRM_STAGES) {
-      if (stages[st.k] || horas < st.horas) continue;
-      try {
-        const lang = ['pt', 'es', 'en', 'de'].includes((ck.locale || '').slice(0, 2)) ? ck.locale.slice(0, 2) : cfg.lang;
-        const coupon = st.k === 's4' ? cfg.coupons.c1 : (st.k === 's5' ? cfg.coupons.c2 : null);
-        const { subject, html } = buildEmail(cfg, st.tipo, lang, {
-          name: (ck.name || '').split(' ')[0], url: ck.url, product: ck.product,
-          coupon: coupon && coupon.code ? coupon : null,
-        });
-        await sendResend(cfg, ck.email, subject, html);
-        stages[st.k] = Date.now();
-        stages._email = ck.email;
-        crm.sent[ck.id] = stages;
-        enviados++;
-        await logEmail({ to: ck.email, type: st.tipo, subject, status: 'enviado' });
-      } catch (e) { erros.push(e.message.slice(0, 120)); }
-      break; // uma etapa por ciclo por checkout
-    }
+    try {
+      const lang = ['pt', 'es', 'en', 'de'].includes((ck.locale || '').slice(0, 2)) ? ck.locale.slice(0, 2) : cfg.lang;
+      const coupon = st.k === 's4' ? cfg.coupons.c1 : (st.k === 's5' ? cfg.coupons.c2 : null);
+      const { subject, html } = buildEmail(cfg, st.tipo, lang, {
+        name: (ck.name || '').split(' ')[0], url: ck.url, product: ck.product,
+        coupon: coupon && coupon.code ? coupon : null,
+        social: cfg.crm.socialProof || null, guarantee: cfg.crm.guaranteeDays || null,
+      });
+      await sendResend(cfg, ck.email, subject, html);
+      stages[st.k] = Date.now();
+      stages._email = ck.email;
+      crm.sent[ck.id] = stages;
+      enviados++;
+      await logEmail({ to: ck.email, type: st.tipo, subject, status: 'enviado' });
+    } catch (e) { erros.push(e.message.slice(0, 120)); }
   }
   await db.writeDoc('crm', crm);
   return { enviados, erros };
